@@ -6,6 +6,7 @@ import { mysqlPool, testMySqlConnection } from "./config/mysql.js";
 import { initializeMySqlSchema } from "./config/mysql-schema.js";
 import { connectMongoDB, disconnectMongoDB } from "./config/mongodb.js";
 import { leadDatabaseType } from "./repositories/lead-repository.factory.js";
+import { closeLeadJobsQueue } from "./jobs/lead-job.queue.js";
 
 const port = Number(process.env.PORT) || 4000;
 let httpServer: ReturnType<typeof app.listen> | undefined;
@@ -33,7 +34,7 @@ async function startServer(): Promise<void> {
     });
   } catch (error) {
     console.error("Failed to start LeadFlow360 API:", error);
-    await Promise.allSettled([pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB()]);
+    await Promise.allSettled([pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
     process.exitCode = 1;
   }
 }
@@ -48,7 +49,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     console.log(`Received ${signal}; shutting down LeadFlow360 API`);
 
     const closeResources = async (): Promise<void> => {
-      await Promise.allSettled([pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB()]);
+      await Promise.allSettled([pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
       process.exit(0);
     };
 

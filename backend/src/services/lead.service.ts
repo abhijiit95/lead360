@@ -3,6 +3,7 @@ import { leadsCacheTtlSeconds, redisClient } from "../config/redis.js";
 import { leadCacheNamespace, leadRepository } from "../repositories/lead-repository.factory.js";
 import type { CreateLeadInput, LeadFilters, LeadUpdateInput } from "../repositories/lead.repository.js";
 import { leadListCacheKey, leadListCachePattern } from "../utils/cache-keys.js";
+import { enqueueLeadCreatedJobs } from "../jobs/lead-job.queue.js";
 
 async function invalidateLeadLists(): Promise<void> {
   if (!redisClient?.isReady) {
@@ -31,6 +32,14 @@ export const leadService = {
   async createLead(input: CreateLeadInput) {
     const lead = await leadRepository.create(input);
     await invalidateLeadLists();
+    try {
+      await enqueueLeadCreatedJobs(lead.id);
+    } catch (error) {
+      console.error(
+        `[Lead jobs] Lead ${lead.id} was created, but background jobs could not be enqueued:`,
+        error,
+      );
+    }
     return lead;
   },
 

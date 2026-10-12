@@ -6,15 +6,25 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "dev:worker": "tsx watch src/worker.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "start:worker": "node dist/worker.js",
+    "jobs:inspect": "tsx src/scripts/inspect-lead-jobs.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:integration": "node --import tsx --import ./src/config/environment.ts --test test/*.integration.test.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "bullmq": "^6.3.12",
     "dotenv": "^18.0.4",
     "express": "^5.1.0",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
-    "pg": "^8.23.0"
+    "mongoose": "^9.11.1",
+    "mysql2": "^3.24.5",
+    "pg": "^8.23.0",
+    "redis": "^6.3.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
