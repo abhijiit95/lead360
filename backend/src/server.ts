@@ -1,4 +1,5 @@
 import "./config/environment.js";
+import { createServer, type Server as HttpServer } from "node:http";
 import { app } from "./app.js";
 import { initializeDatabase, pool } from "./config/database.js";
 import { connectRedis, disconnectRedis } from "./config/redis.js";
@@ -7,9 +8,10 @@ import { initializeMySqlSchema } from "./config/mysql-schema.js";
 import { connectMongoDB, disconnectMongoDB } from "./config/mongodb.js";
 import { leadDatabaseType } from "./repositories/lead-repository.factory.js";
 import { closeLeadJobsQueue } from "./jobs/lead-job.queue.js";
+import { attachSocketServer, closeSocketServer } from "./config/socket.js";
 
 const port = Number(process.env.PORT) || 4000;
-let httpServer: ReturnType<typeof app.listen> | undefined;
+let httpServer: HttpServer | undefined;
 
 async function startServer(): Promise<void> {
   try {
@@ -29,12 +31,19 @@ async function startServer(): Promise<void> {
       }
     }
     await connectRedis();
-    httpServer = app.listen(port, () => {
-      console.log(`LeadFlow360 API listening on port ${port}`);
+    httpServer = createServer(app);
+    attachSocketServer(httpServer);
+    await new Promise<void>((resolve, reject) => {
+      httpServer?.once("error", reject);
+      httpServer?.listen(port, () => {
+        httpServer?.removeListener("error", reject);
+        console.log(`LeadFlow360 API listening on port ${port}`);
+        resolve();
+      });
     });
   } catch (error) {
     console.error("Failed to start LeadFlow360 API:", error);
-    await Promise.allSettled([pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
+    await Promise.allSettled([closeSocketServer(), pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
     process.exitCode = 1;
   }
 }
@@ -49,14 +58,10 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     console.log(`Received ${signal}; shutting down LeadFlow360 API`);
 
     const closeResources = async (): Promise<void> => {
-      await Promise.allSettled([pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
+      await Promise.allSettled([closeSocketServer(), pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
       process.exit(0);
     };
 
-    if (httpServer) {
-      httpServer.close(() => void closeResources());
-    } else {
-      void closeResources();
-    }
+    void closeResources();
   });
 }

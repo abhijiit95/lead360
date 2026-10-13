@@ -83,9 +83,89 @@ curl.exe -X POST http://localhost:4000/api/auth/login `
 
 Use the returned `accessToken` as a Bearer token for requests to `/api/leads`.
 
+## Redis caching
+
+PostgreSQL remains the source of truth. Redis is used only as a cache for `GET /api/leads`, using the cache-aside pattern. The first request for a query reads from PostgreSQL and stores the response in Redis; an identical request within the TTL can be served from Redis without querying PostgreSQL. Cache keys include page, limit, status, and source, so different query combinations do not share cached responses.
+
+Configure `REDIS_URL` in the root `.env` (the example value is `redis://localhost:6379`). `LEADS_CACHE_TTL_SECONDS` controls the lead-list cache lifetime and defaults to 60 seconds.
+
+Start PostgreSQL and Redis from the repository root:
+
+```sh
+docker compose up -d postgres redis
+docker compose ps
+```
+
+Verify Redis is responding:
+
+```sh
+docker exec -it leadflow360-redis redis-cli
+PING
+```
+
+Redis cache entries are invalidated after a successful lead create, update, or delete. If Redis is unavailable, the API logs the cache issue and continues reading from PostgreSQL; a cache write or invalidation failure does not turn a successful database operation into an API failure. Redis reconnects in the background when its connection drops. PostgreSQL errors are still returned through the normal API error handling.
+
+## Background lead jobs
+
+BullMQ stores asynchronous jobs in Redis. The API is the **producer**: after a lead is saved and list caches are invalidated, it enqueues a development notification and a one-time delayed follow-up using only the lead ID. A separate **worker** fetches the current lead through the configured repository and runs the job. The notification adapters are explicitly development-only mocks; no WhatsApp message is sent.
+
+The database write and queue insertion are separate operations, so they are not atomic. If Redis is down or insertion times out, the lead remains created, the API logs the enqueue failure, and the existing create response is returned. This can leave a lead without jobs; a transactional outbox would be a future reliability improvement. Queue insertion uses stable job IDs to avoid duplicates while a job with that ID is retained. Completed jobs are removed after the retention window, so this is not permanent exactly-once protection. Follow-ups are one-time delayed jobs, not repeating reminders. The worker reloads the lead at execution time and skips reminders for leads that have since been deleted.
+
+`LEAD_FOLLOWUP_DELAY_SECONDS` defaults to `86400` (one day), `LEAD_JOB_ENQUEUE_TIMEOUT_MS` defaults to `3000`, and `LEAD_JOB_WORKER_CONCURRENCY` defaults to `5`. Jobs use five attempts with exponential backoff starting at one second; up to 500 completed and 1,000 failed jobs are retained. BullMQ uses separate ioredis connections, while the existing node-redis client continues to serve caching.
+
+Start Redis and the API, then start the worker in a second terminal from `backend`:
+
+```sh
+npm run dev
+npm run dev:worker
+```
+
+For a built deployment, run `npm run build`, then `npm start` and `npm run start:worker` in separate processes. Inspect status counts and recent failure reasons without printing job payloads with `npm run jobs:inspect`. Shutdown signals close the API/worker, database pools, and queue connections gracefully. Run unit tests with `npm test`; `npm run test:integration` runs Redis-backed integration tests when those test files are present.
+
+## Real-time lead updates (Socket.IO)
+
+The API attaches Socket.IO to the same Node HTTP server that serves Express. The service publishes an event only after its selected repository has successfully created, updated, or deleted a lead. The separate BullMQ worker continues handling notification and follow-up jobs; it does not publish these events, so one REST change produces one real-time event.
+
+| Event | Payload |
+| --- | --- |
+| `lead:created` | `{ id, source, status, created_at, updated_at }` |
+| `lead:updated` | `{ id, source, status, created_at, updated_at }` |
+| `lead:deleted` | `{ id }` |
+
+Payloads deliberately omit name, email, and phone. Clients authenticate the Socket.IO handshake with the same JWT returned by `/api/auth/login`, using `auth: { token: accessToken }` (the Node test client below does this). Socket connections use the same HS256 verification, expiry, subject, and admin/agent claim validation as REST Bearer authentication. Both roles may read leads through the existing REST API and can therefore join the server-controlled `leads:read` room. The server joins authenticated sockets automatically; clients cannot request arbitrary user or team rooms. Team rooms are not used because the project does not yet model teams.
+
+There is no frontend in this repository yet. A small Node client listens for events and reconnects automatically. From `backend`, first obtain an access token from the login endpoint, then run:
+
+```sh
+SOCKET_TEST_TOKEN='<access token>' npm run socket:client
+```
+
+Optionally set `SOCKET_URL` if the API is not at `http://localhost:4000`. Keep the token private. The client reports connect/disconnect and connection errors, and prints the sanitized lead event payloads. When a socket disconnects it may miss events; Socket.IO delivery is not a durable event log. After reconnecting, clients should call the authenticated `GET /api/leads` endpoint with their current page and filters, or `GET /api/leads/:id` for a specific lead, to resynchronize. The client must refresh or replace an expired token before reconnecting.
+
+The API emits realtime events independently of BullMQ. BullMQ keeps its existing role for asynchronous notifications and delayed reminders. Running multiple API instances requires a Socket.IO adapter (for example, the Socket.IO Redis adapter) to broadcast room events across instances; the existing Redis cache client and BullMQ connections do not provide that adapter automatically. The current Socket.IO room state and broadcasts are process-local. Shutdown closes Socket.IO clients and the attached HTTP server before closing the database, cache, and queue resources.
+
+Socket.IO transport/auth tests are included in `npm test`; build with `npm run build` as usual.
+
+## OAuth 2.0 delegated API access
+
+This module connects an authenticated LeadFlow360 account to Google OAuth 2.0 for delegated Google API access. It uses Google's maintained `google-auth-library` for consent URLs, PKCE, token exchange, refresh, and revocation. It remains separate from `/api/auth/login`: a Google access token is never accepted as LeadFlow360 identity. This is not Google Login or OIDC.
+
+`POST /api/oauth/google/connect` requires the existing LeadFlow360 JWT. The API creates state and an S256 PKCE verifier, stores a one-time transaction in Redis (ten minutes by default), and redirects to Google. `GET /api/oauth/google/callback` consumes state once, validates it and the transaction expiry, then exchanges the code with the verifier. `GET /api/oauth/google/resource` requires the LeadFlow360 JWT and calls the configured Google resource URL server-side. `DELETE /api/oauth/google/connection` revokes the saved Google token and removes local storage.
+
+The exact callback URL configured in code and `.env.example`, and the URI that must be registered in Google Cloud Console, is:
+
+```text
+http://localhost:4000/api/oauth/google/callback
+```
+
+Set `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and `GOOGLE_OAUTH_REDIRECT_URI` in the root `.env`. Choose `GOOGLE_OAUTH_SCOPES` and `GOOGLE_OAUTH_RESOURCE_URL` for the specific Google API enabled in the Cloud project; this project does not assume a Google API or request identity scopes. Set `GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY` to a base64 encoded 32-byte key (`openssl rand -base64 32`). `GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS` defaults to 600. Keep secrets in an ignored local `.env` or production secret manager; `.env` is ignored by Git. Do not copy credentials into source or `.env.example`.
+
+Provider access and refresh tokens are AES-256-GCM encrypted in PostgreSQL. Redis is required for short-lived OAuth transactions. Expired access tokens are refreshed when Google supplies a refresh token; updated credentials remain encrypted. The resource URL is fixed by server configuration and never comes from the request. Production requires HTTPS and the exact production callback registered with Google. Request only the narrow scopes required by the enabled API. OAuth 2.0 delegates resource access; OIDC adds identity assertions and is intentionally out of scope.
+
 ## Project structure
 
 - `backend/` — TypeScript and Express API, organized into routes, controllers, services, repositories, and database configuration
-- `frontend/` — reserved for the Next.js application
+- `backend/src/config/socket.ts` and `backend/src/realtime/` — authenticated realtime server and typed lead events
+- `backend/src/scripts/socket-test-client.ts` — minimal Socket.IO event listener for local verification
 
-The local Compose configuration starts PostgreSQL only. No authentication or other infrastructure is configured yet.
+The local Compose configuration starts PostgreSQL and Redis. Redis is an optional cache layer; authentication and lead data remain backed by PostgreSQL and the existing API.

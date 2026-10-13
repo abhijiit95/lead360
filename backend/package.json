@@ -11,6 +11,7 @@
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
     "jobs:inspect": "tsx src/scripts/inspect-lead-jobs.ts",
+    "socket:client": "tsx src/scripts/socket-test-client.ts",
     "test": "node --import tsx --test test/*.test.ts",
     "test:integration": "node --import tsx --import ./src/config/environment.ts --test test/*.integration.test.ts"
   },
@@ -19,18 +20,21 @@
     "bullmq": "^6.3.12",
     "dotenv": "^18.0.4",
     "express": "^5.1.0",
+    "google-auth-library": "^11.2.0",
     "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.11.1",
     "mysql2": "^3.24.5",
     "pg": "^8.23.0",
-    "redis": "^6.3.0"
+    "redis": "^6.3.0",
+    "socket.io": "^4.8.4"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.15.30",
     "@types/pg": "^8.23.1",
+    "socket.io-client": "^4.8.4",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }

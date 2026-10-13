@@ -2,6 +2,7 @@ import express from "express";
 import { authRouter } from "./routes/auth.routes.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { leadRouter } from "./routes/lead.routes.js";
+import { oauthRouter } from "./routes/oauth.routes.js";
 
 export const app = express();
 app.set("json spaces", 2);
@@ -13,6 +14,7 @@ app.get("/api/health", (_request, response) => {
 });
 
 app.use("/api/auth", authRouter);
+app.use("/api/oauth", oauthRouter);
 app.use("/api/leads", leadRouter);
 
 app.use((_request, response) => {

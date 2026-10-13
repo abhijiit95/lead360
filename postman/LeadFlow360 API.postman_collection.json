@@ -66,6 +66,23 @@
       ]
     },
     {
+      "name": "Google OAuth",
+      "item": [
+        {
+          "name": "Get Google Drive metadata (requires connected account)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/oauth/google/resource",
+            "description": "Uses the LeadFlow360 JWT from the login request. The backend uses the connected Google token server-side; the Google token is never sent by Postman."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "Leads",
       "item": [
         {

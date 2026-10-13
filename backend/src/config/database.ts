@@ -71,4 +71,14 @@ export async function initializeDatabase(): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS oauth_provider_tokens (
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      provider VARCHAR(100) NOT NULL,
+      token_ciphertext TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_id, provider)
+    )
+  `);
 }
