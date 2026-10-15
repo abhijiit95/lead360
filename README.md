@@ -134,7 +134,7 @@ The API attaches Socket.IO to the same Node HTTP server that serves Express. The
 
 Payloads deliberately omit name, email, and phone. Clients authenticate the Socket.IO handshake with the same JWT returned by `/api/auth/login`, using `auth: { token: accessToken }` (the Node test client below does this). Socket connections use the same HS256 verification, expiry, subject, and admin/agent claim validation as REST Bearer authentication. Both roles may read leads through the existing REST API and can therefore join the server-controlled `leads:read` room. The server joins authenticated sockets automatically; clients cannot request arbitrary user or team rooms. Team rooms are not used because the project does not yet model teams.
 
-There is no frontend in this repository yet. A small Node client listens for events and reconnects automatically. From `backend`, first obtain an access token from the login endpoint, then run:
+The React frontend now lives in `frontend/`. A small Node client listens for events and reconnects automatically. From `backend`, first obtain an access token from the login endpoint, then run:
 
 ```sh
 SOCKET_TEST_TOKEN='<access token>' npm run socket:client
@@ -167,5 +167,60 @@ Provider access and refresh tokens are AES-256-GCM encrypted in PostgreSQL. Redi
 - `backend/` — TypeScript and Express API, organized into routes, controllers, services, repositories, and database configuration
 - `backend/src/config/socket.ts` and `backend/src/realtime/` — authenticated realtime server and typed lead events
 - `backend/src/scripts/socket-test-client.ts` — minimal Socket.IO event listener for local verification
+- `frontend/` — React + TypeScript + Vite login page for Google OIDC
 
 The local Compose configuration starts PostgreSQL and Redis. Redis is an optional cache layer; authentication and lead data remain backed by PostgreSQL and the existing API.
+
+## Google Login with OpenID Connect
+
+The React login UI is in `frontend/` and uses a separate backend OIDC flow. It does not reuse the Google Drive delegated OAuth routes. The browser opens `GET /api/oidc/google/login`; the backend creates one-time state, nonce, and an S256 PKCE challenge in Redis, then redirects to Google. Google returns to the backend callback, where `google-auth-library` exchanges the code and validates the ID token signature, issuer, audience, and expiry. The service also checks the ID-token nonce against the one-time transaction.
+
+After verification, the backend looks up the local user by the validated Google subject in `user_identities`. It never links accounts from matching email addresses and does not auto-create unknown users. To link an existing LeadFlow360 account, use the login page's “First time?” form: it verifies the existing email/password, sends the resulting LeadFlow360 JWT only to `POST /api/oidc/google/link`, then redirects the browser to the returned Google authorization URL. Google subject links are unique. The login flow requests only the `openid` scope; it does not need a Google email/profile scope. New Google users must first have an existing LeadFlow360 account; a registration/product policy for Google-only users is not implemented.
+
+For a linked account, the backend issues the existing LeadFlow360 HS256 JWT in an `HttpOnly; SameSite=Lax` cookie named `lf_session`; production also marks it `Secure`. The callback redirects to the frontend with only a non-sensitive status code. The frontend calls `GET /api/oidc/session` with credentials to display the signed-in user. It does not store JWTs in local or session storage. `POST /api/oidc/logout` revokes the cookie token in Redis until its JWT expiry and clears the browser cookie. Cookie-authenticated requests check this revocation record; existing Bearer-token authentication remains unchanged. Redis must remain available for OIDC transactions and cookie-session revocation.
+
+### Local setup
+
+Backend defaults to `http://localhost:4000`; the Vite frontend uses `http://localhost:5173`. Add the following OIDC callback variable to the existing root `.env` without removing the existing Drive OAuth variables:
+
+```text
+GOOGLE_OIDC_REDIRECT_URI=http://localhost:4000/api/oidc/google/callback
+FRONTEND_ORIGIN=http://localhost:5173
+```
+
+The OIDC flow reuses the Google client ID and secret already used by the backend. In Google Cloud Console, add this exact additional Authorized redirect URI; keep the Drive callback too:
+
+```text
+http://localhost:4000/api/oidc/google/callback
+```
+
+Frontend `.env.example` contains `VITE_API_BASE_URL=http://localhost:4000`. It is a browser-visible URL only; never put Google secrets there.
+
+Start the backend and frontend in separate terminals:
+
+```sh
+cd backend && npm run dev
+```
+
+```sh
+cd frontend && npm install && npm run dev
+```
+
+Open `http://localhost:5173`, link an existing LeadFlow360 account the first time, and then choose “Continue with Google”. Redis must be available for one-time OIDC transactions. In production, use HTTPS, an exact registered callback, a same-site frontend/backend deployment for the `SameSite=Lax` cookie, and a precisely configured `FRONTEND_ORIGIN`.
+
+### Learning flow
+
+```text
+React button → backend login endpoint → Google authentication
+→ backend callback → ID-token verification → linked local user lookup
+→ LeadFlow360 JWT in HttpOnly cookie → authenticated frontend page
+```
+
+- **React frontend:** displays sign-in, linking, loading, success, and error states; begins redirects and asks the API for session status.
+- **Express backend:** creates and validates the OIDC transaction, validates the ID token, looks up the local identity, and sets the application cookie.
+- **Google:** authenticates the account and returns an authorization code and OIDC tokens to the backend callback.
+- **Google ID token:** signed identity assertion; validated by `verifyIdToken` before using its `sub`.
+- **Google access token:** grants access to Google APIs; not used as proof of identity and not persisted by the login flow.
+- **LeadFlow360 JWT:** existing application token; for OIDC login it is held in an HttpOnly cookie and protects app endpoints.
+
+Automated OIDC tests use mocked Google responses. They do not claim to test live Google authentication. The existing Google Drive OAuth flow remains under `/api/oauth`.

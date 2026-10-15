@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "LeadFlow360 API",
-    "description": "Local LeadFlow360 health and lead CRUD, pagination, and filtering requests.",
+    "description": "LeadFlow360 REST, Google OAuth delegated access, and Google OIDC login requests. Google OIDC completes in a browser because its callback sets an HttpOnly session cookie.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -77,6 +77,59 @@
             ],
             "url": "{{baseUrl}}/api/oauth/google/resource",
             "description": "Uses the LeadFlow360 JWT from the login request. The backend uses the connected Google token server-side; the Google token is never sent by Postman."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Google Login (OIDC)",
+      "description": "OIDC sign-in is a browser redirect flow. Use the frontend for end-to-end Google login and cookie-session validation. Postman can verify initiation and the account-link endpoint, but it does not complete Google's interactive consent screen.",
+      "item": [
+        {
+          "name": "Start Google login (expect 302)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/oidc/google/login",
+            "description": "No LeadFlow360 JWT is needed. Keep redirect following disabled for this request. A 302 confirms initiation; do the actual consent and callback in the frontend browser. The Location header contains one-time OAuth state/nonce/PKCE data—do not share it."
+          },
+          "protocolProfileBehavior": { "followRedirects": false },
+          "response": []
+        },
+        {
+          "name": "Begin linking Google to existing account",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/oidc/google/link",
+            "description": "Requires the LeadFlow360 JWT saved by the Authentication > Login request. The response contains a one-time authorization URL. For the recommended flow, use the frontend's First time? Link Google form so the browser completes the callback and stores the HttpOnly session cookie. Do not share the authorization URL."
+          },
+          "response": []
+        },
+        {
+          "name": "Check OIDC session endpoint (Bearer JWT)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": "{{baseUrl}}/api/oidc/session",
+            "description": "Postman uses the saved LeadFlow360 Bearer JWT for this API check. To verify the Google OIDC HttpOnly-cookie session, use the frontend and confirm its GET /api/oidc/session returns 200 in browser DevTools."
+          },
+          "response": []
+        },
+        {
+          "name": "Logout OIDC browser session",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Origin", "value": "http://localhost:5173" }
+            ],
+            "url": "{{baseUrl}}/api/oidc/logout",
+            "description": "This endpoint logs out the OIDC session cookie in the current client's cookie jar. It does not sign out of Google and does not revoke a Bearer JWT. Postman has a separate cookie jar from your browser, so this request will only log out a Postman cookie if one is present in Postman's Cookies manager for localhost. For the browser session, use the frontend Sign out button, then confirm GET /api/oidc/session returns 401 in browser DevTools. Expected response when authenticated: 204 No Content."
           },
           "response": []
         }

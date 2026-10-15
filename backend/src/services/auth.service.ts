@@ -1,22 +1,14 @@
 import bcrypt from "bcryptjs";
-import jwt, { type SignOptions } from "jsonwebtoken";
-import { jwtExpiresIn, jwtSecret } from "../config/auth.js";
+import { jwtExpiresIn } from "../config/auth.js";
 import { AppError } from "../errors/app-error.js";
 import { userRepository } from "../repositories/user.repository.js";
 import type { LoginInput, PublicUser, RegisterInput } from "../types/auth.js";
+import { createAccessToken } from "../utils/access-token.js";
 
 const passwordHashRounds = 12;
 
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
-}
-
-function createAccessToken(user: PublicUser): string {
-  return jwt.sign(
-    { name: user.name, email: user.email, role: user.role },
-    jwtSecret,
-    { algorithm: "HS256", subject: user.id, expiresIn: jwtExpiresIn as SignOptions["expiresIn"] },
-  );
 }
 
 export const authService = {

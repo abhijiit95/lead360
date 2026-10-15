@@ -1,6 +1,15 @@
-import jwt, { type JwtPayload } from "jsonwebtoken";
-import { jwtSecret } from "../config/auth.js";
-import type { AuthenticatedUser, UserRole } from "../types/auth.js";
+import jwt, { type JwtPayload, type SignOptions } from "jsonwebtoken";
+import { jwtExpiresIn, jwtSecret } from "../config/auth.js";
+import type { AuthenticatedUser, PublicUser, UserRole } from "../types/auth.js";
+
+/** Signs the existing LeadFlow360 JWT used by both password and Google OIDC login. */
+export function createAccessToken(user: PublicUser | AuthenticatedUser, jwtId?: string): string {
+  return jwt.sign(
+    { name: user.name, email: user.email, role: user.role },
+    jwtSecret,
+    { algorithm: "HS256", subject: user.id, expiresIn: jwtExpiresIn as SignOptions["expiresIn"], ...(jwtId ? { jwtid: jwtId } : {}) },
+  );
+}
 
 /** Verifies a LeadFlow360 access token using the same rules for REST and Socket.IO. */
 export function verifyAccessToken(token: string): AuthenticatedUser | null {
