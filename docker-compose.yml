@@ -10,6 +10,12 @@ services:
       - "${DATABASE_PORT:?Set DATABASE_PORT in .env}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
@@ -19,20 +25,31 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   mysql:
     image: mysql:8
     container_name: leadflow360-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: leadflow360_mysql
-      MYSQL_USER: leadflow
-      MYSQL_PASSWORD: leadflow_password
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?Set MYSQL_DATABASE in .env}
+      MYSQL_USER: ${MYSQL_USER:?Set MYSQL_USER in .env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
     ports:
-      - "3306:3306"
+      - "${MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$${MYSQL_PASSWORD}\" mysql --protocol=TCP --host=127.0.0.1 --user=\"$${MYSQL_USER}\" --database=\"$${MYSQL_DATABASE}\" --batch --skip-column-names --execute='SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   mongodb:
     image: mongo:8
@@ -46,6 +63,124 @@ services:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand({ ping: 1 }).ok ? 0 : 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  api:
+    image: leadflow360-backend:local
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: development
+      PORT: "4000"
+      DATABASE_TYPE: ${DATABASE_TYPE:-postgres}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: ${DATABASE_NAME:?Set DATABASE_NAME in .env}
+      DATABASE_USER: ${DATABASE_USER:?Set DATABASE_USER in .env}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?Set MYSQL_DATABASE in .env}
+      MYSQL_USER: ${MYSQL_USER:?Set MYSQL_USER in .env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MONGODB_URI: ${MONGODB_DOCKER_URI:-}
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-leadflow360}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:?Set JWT_EXPIRES_IN in .env}
+      LEADS_CACHE_TTL_SECONDS: ${LEADS_CACHE_TTL_SECONDS:-60}
+      LEAD_FOLLOWUP_DELAY_SECONDS: ${LEAD_FOLLOWUP_DELAY_SECONDS:-86400}
+      LEAD_JOB_ENQUEUE_TIMEOUT_MS: ${LEAD_JOB_ENQUEUE_TIMEOUT_MS:-3000}
+      LEAD_JOB_WORKER_CONCURRENCY: ${LEAD_JOB_WORKER_CONCURRENCY:-5}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-}
+      GOOGLE_OAUTH_SCOPES: ${GOOGLE_OAUTH_SCOPES:-}
+      GOOGLE_OAUTH_RESOURCE_URL: ${GOOGLE_OAUTH_RESOURCE_URL:-}
+      GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY: ${GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY:-}
+      GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS: ${GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS:-600}
+      GOOGLE_OIDC_REDIRECT_URI: ${GOOGLE_OIDC_REDIRECT_URI:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  worker:
+    image: leadflow360-backend:local
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    environment:
+      DATABASE_TYPE: ${DATABASE_TYPE:-postgres}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: ${DATABASE_NAME:?Set DATABASE_NAME in .env}
+      DATABASE_USER: ${DATABASE_USER:?Set DATABASE_USER in .env}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:?Set DATABASE_PASSWORD in .env}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?Set MYSQL_DATABASE in .env}
+      MYSQL_USER: ${MYSQL_USER:?Set MYSQL_USER in .env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+      MONGODB_URI: ${MONGODB_DOCKER_URI:-}
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-leadflow360}
+      REDIS_URL: redis://redis:6379
+      LEAD_FOLLOWUP_DELAY_SECONDS: ${LEAD_FOLLOWUP_DELAY_SECONDS:-86400}
+      LEAD_JOB_WORKER_CONCURRENCY: ${LEAD_JOB_WORKER_CONCURRENCY:-5}
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  frontend:
+    image: leadflow360-frontend:local
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:4000}
+    restart: unless-stopped
+    ports:
+      - "5173:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
 
 volumes:
   postgres_data:
