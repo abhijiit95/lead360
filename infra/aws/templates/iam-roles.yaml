@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Separate ECS execution/task roles and narrowly scoped GitHub OIDC publishing/deployment roles for LeadFlow360.
+
+Parameters:
+  ApiSecretArns:
+    Type: CommaDelimitedList
+    Description: Exact Secrets Manager ARNs injected into the API task.
+  WorkerSecretArns:
+    Type: CommaDelimitedList
+    Description: Exact Secrets Manager ARNs injected into the worker task.
+  DbInitSecretArns:
+    Type: CommaDelimitedList
+    Description: Exact Secrets Manager ARNs injected into the one-off initializer.
+  ApiLogGroupArn:
+    Type: String
+  WorkerLogGroupArn:
+    Type: String
+  DbInitLogGroupArn:
+    Type: String
+  FrontendBucketArn:
+    Type: String
+    Description: ARN of the private static frontend bucket.
+  CloudFrontDistributionArn:
+    Type: String
+    Description: ARN of the frontend CloudFront distribution.
+  GitHubOidcProviderArn:
+    Type: String
+    Description: Existing token.actions.githubusercontent.com OIDC provider ARN.
+  GitHubEcrOidcSubject:
+    Type: String
+    Description: Exact GitHub OIDC sub claim for the publishing repository and branch; match the subject format actually issued by GitHub.
+  GitHubFrontendOidcSubject:
+    Type: String
+    Description: Exact GitHub OIDC sub claim for the repository staging environment; restrict that environment to the intended branch in GitHub.
+  ApiEcrRepositoryArn:
+    Type: String
+
+Resources:
+  ApiExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ApiImageLogsSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage']
+                Resource: !Ref ApiEcrRepositoryArn
+              - Effect: Allow
+                Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
+                Resource: !Sub '${ApiLogGroupArn}:*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref ApiSecretArns
+
+  WorkerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: WorkerImageLogsSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage']
+                Resource: !Ref ApiEcrRepositoryArn
+              - Effect: Allow
+                Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
+                Resource: !Sub '${WorkerLogGroupArn}:*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref WorkerSecretArns
+
+  DbInitExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DbInitImageLogsSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action: ['ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage']
+                Resource: !Ref ApiEcrRepositoryArn
+              - Effect: Allow
+                Action: ['logs:CreateLogStream', 'logs:PutLogEvents']
+                Resource: !Sub '${DbInitLogGroupArn}:*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DbInitSecretArns
+
+  ApiTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+
+  WorkerTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+
+  DbInitTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+
+  GitHubEcrPublishRole:
+    Type: AWS::IAM::Role
+    Properties:
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Ref GitHubEcrOidcSubject
+      Policies:
+        - PolicyName: PublishLead360ApiImage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action: ['ecr:BatchCheckLayerAvailability', 'ecr:CompleteLayerUpload', 'ecr:DescribeImages', 'ecr:InitiateLayerUpload', 'ecr:PutImage', 'ecr:UploadLayerPart']
+                Resource: !Ref ApiEcrRepositoryArn
+
+  GitHubFrontendDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Ref GitHubFrontendOidcSubject
+      Policies:
+        - PolicyName: DeployLead360StaticFrontend
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ['s3:ListBucket', 's3:GetBucketLocation']
+                Resource: !Ref FrontendBucketArn
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub '${FrontendBucketArn}/*'
+              - Effect: Allow
+                Action: cloudfront:CreateInvalidation
+                Resource: !Ref CloudFrontDistributionArn
+
+Outputs:
+  ApiExecutionRoleArn: { Value: !GetAtt ApiExecutionRole.Arn }
+  WorkerExecutionRoleArn: { Value: !GetAtt WorkerExecutionRole.Arn }
+  DbInitExecutionRoleArn: { Value: !GetAtt DbInitExecutionRole.Arn }
+  ApiTaskRoleArn: { Value: !GetAtt ApiTaskRole.Arn }
+  WorkerTaskRoleArn: { Value: !GetAtt WorkerTaskRole.Arn }
+  DbInitTaskRoleArn: { Value: !GetAtt DbInitTaskRole.Arn }
+  GitHubEcrPublishRoleArn: { Value: !GetAtt GitHubEcrPublishRole.Arn }
+  GitHubFrontendDeployRoleArn: { Value: !GetAtt GitHubFrontendDeployRole.Arn }

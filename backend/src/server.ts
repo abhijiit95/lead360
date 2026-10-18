@@ -3,33 +3,29 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { app } from "./app.js";
 import { initializeDatabase, pool } from "./config/database.js";
 import { connectRedis, disconnectRedis } from "./config/redis.js";
-import { mysqlPool, testMySqlConnection } from "./config/mysql.js";
+import { closeMySqlPool, testMySqlConnection } from "./config/mysql.js";
 import { initializeMySqlSchema } from "./config/mysql-schema.js";
 import { connectMongoDB, disconnectMongoDB } from "./config/mongodb.js";
 import { leadDatabaseType } from "./repositories/lead-repository.factory.js";
 import { closeLeadJobsQueue } from "./jobs/lead-job.queue.js";
 import { attachSocketServer, closeSocketServer } from "./config/socket.js";
+import { prepareApiDatabases } from "./startup/database-startup.js";
 
 const port = Number(process.env.PORT) || 4000;
 let httpServer: HttpServer | undefined;
 
 async function startServer(): Promise<void> {
   try {
-    await initializeDatabase();
-    if (leadDatabaseType === "mysql") {
-      try {
-        await testMySqlConnection();
-        await initializeMySqlSchema();
-      } catch {
-        console.warn("[MySQL] Continuing startup without MySQL; lead requests may fail until it is available");
-      }
-    } else if (leadDatabaseType === "mongodb") {
-      try {
-        await connectMongoDB();
-      } catch {
-        console.warn("[MongoDB] Continuing startup without MongoDB; lead requests may fail until it is available");
-      }
-    }
+    await prepareApiDatabases({
+      production: process.env.NODE_ENV === "production",
+      leadDatabaseType,
+      verifyPostgres: () => pool.query("SELECT 1"),
+      initializePostgres: initializeDatabase,
+      verifyMySql: testMySqlConnection,
+      initializeMySql: initializeMySqlSchema,
+      connectMongo: connectMongoDB,
+      warn: (message) => console.warn(message),
+    });
     await connectRedis();
     httpServer = createServer(app);
     attachSocketServer(httpServer);
@@ -43,7 +39,7 @@ async function startServer(): Promise<void> {
     });
   } catch (error) {
     console.error("Failed to start LeadFlow360 API:", error);
-    await Promise.allSettled([closeSocketServer(), pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
+    await Promise.allSettled([closeSocketServer(), pool.end(), closeMySqlPool(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
     process.exitCode = 1;
   }
 }
@@ -58,7 +54,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     console.log(`Received ${signal}; shutting down LeadFlow360 API`);
 
     const closeResources = async (): Promise<void> => {
-      await Promise.allSettled([closeSocketServer(), pool.end(), mysqlPool.end(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
+      await Promise.allSettled([closeSocketServer(), pool.end(), closeMySqlPool(), disconnectRedis(), disconnectMongoDB(), closeLeadJobsQueue()]);
       process.exit(0);
     };
 

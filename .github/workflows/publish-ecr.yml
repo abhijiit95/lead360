@@ -1,0 +1,80 @@
+name: Publish API image to ECR (manual, confirmed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_ecr_publish:
+        description: Set true only after reviewing and approving the API image publication
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_ecr_publish == true
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require successful CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&branch=main&per_page=100" > "${RUNNER_TEMP}/ci-runs.json"
+          node - "${RUNNER_TEMP}/ci-runs.json" <<'NODE'
+          const fs = require('node:fs');
+          const runs = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).workflow_runs ?? [];
+          const passed = runs.some((run) => run.head_sha === process.env.GITHUB_SHA
+            && run.event === 'push'
+            && run.status === 'completed'
+            && run.conclusion === 'success');
+          if (!passed) {
+            console.error('No successful main-branch CI run found for this commit; image publication is blocked.');
+            process.exit(1);
+          }
+          console.log('Verified successful main-branch CI for this commit.');
+          NODE
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ECR_PUBLISH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.1.0
+
+      - name: Check whether this immutable image tag already exists
+        id: image-tag
+        run: |
+          api_exists=false
+          aws ecr describe-images --repository-name lead360-api --image-ids imageTag="$GITHUB_SHA" >/dev/null 2>&1 && api_exists=true || true
+          if [ "$api_exists" = true ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "The immutable API image already exists for this commit; nothing to publish."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push API image
+        if: steps.image-tag.outputs.publish == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: ${{ steps.ecr-login.outputs.registry }}/lead360-api:${{ github.sha }}

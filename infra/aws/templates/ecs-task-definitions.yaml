@@ -1,0 +1,234 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Fargate task definition templates for LeadFlow360 API, worker, and one-off database initialization.
+
+Parameters:
+  ImageTag:
+    Type: String
+    Description: Immutable Git commit SHA tag already published to ECR.
+    AllowedPattern: '^[0-9a-f]{40}$'
+  ApiRepositoryUri:
+    Type: String
+    Description: ECR URI for lead360-api, without an image tag.
+  ApiExecutionRoleArn:
+    Type: String
+  WorkerExecutionRoleArn:
+    Type: String
+  DbInitExecutionRoleArn:
+    Type: String
+  ApiTaskRoleArn:
+    Type: String
+  WorkerTaskRoleArn:
+    Type: String
+  DbInitTaskRoleArn:
+    Type: String
+  ApiLogGroupName:
+    Type: String
+    Default: /ecs/lead360/api
+  WorkerLogGroupName:
+    Type: String
+    Default: /ecs/lead360/worker
+  DbInitLogGroupName:
+    Type: String
+    Default: /ecs/lead360/db-init
+  DatabaseHost:
+    Type: String
+    Description: RDS PostgreSQL endpoint hostname; do not include credentials.
+  DatabaseName:
+    Type: String
+  DatabaseUser:
+    Type: String
+  RedisUrlSecretArn:
+    Type: String
+    Description: Secrets Manager ARN whose SecretString is a Redis URL.
+  DatabasePasswordSecretArn:
+    Type: String
+  JwtSecretArn:
+    Type: String
+  JwtExpiresIn:
+    Type: String
+    Default: 1h
+  GoogleClientSecretArn:
+    Type: String
+  GoogleTokenEncryptionKeySecretArn:
+    Type: String
+  GoogleClientId:
+    Type: String
+    Default: ''
+  GoogleOAuthRedirectUri:
+    Type: String
+    Default: ''
+  GoogleOidcRedirectUri:
+    Type: String
+    Default: ''
+  FrontendOrigin:
+    Type: String
+    Description: HTTPS browser frontend origin.
+  GoogleOAuthScopes:
+    Type: String
+    Default: ''
+  GoogleOAuthResourceUrl:
+    Type: String
+    Default: ''
+
+Resources:
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref ApiLogGroupName
+      RetentionInDays: 30
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref WorkerLogGroupName
+      RetentionInDays: 30
+  DbInitLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref DbInitLogGroupName
+      RetentionInDays: 30
+
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: lead360-api
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref ApiExecutionRoleArn
+      TaskRoleArn: !Ref ApiTaskRoleArn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: api
+          Image: !Sub '${ApiRepositoryUri}:${ImageTag}'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 4000
+              Protocol: tcp
+          Environment:
+            - { Name: NODE_ENV, Value: production }
+            - { Name: PORT, Value: '4000' }
+            - { Name: DATABASE_TYPE, Value: postgres }
+            - { Name: DATABASE_SSL, Value: 'true' }
+            - { Name: DATABASE_HOST, Value: !Ref DatabaseHost }
+            - { Name: DATABASE_PORT, Value: '5432' }
+            - { Name: DATABASE_NAME, Value: !Ref DatabaseName }
+            - { Name: DATABASE_USER, Value: !Ref DatabaseUser }
+            - { Name: FRONTEND_ORIGIN, Value: !Ref FrontendOrigin }
+            - { Name: JWT_EXPIRES_IN, Value: !Ref JwtExpiresIn }
+            - { Name: GOOGLE_OAUTH_CLIENT_ID, Value: !Ref GoogleClientId }
+            - { Name: GOOGLE_OAUTH_REDIRECT_URI, Value: !Ref GoogleOAuthRedirectUri }
+            - { Name: GOOGLE_OIDC_REDIRECT_URI, Value: !Ref GoogleOidcRedirectUri }
+            - { Name: GOOGLE_OAUTH_SCOPES, Value: !Ref GoogleOAuthScopes }
+            - { Name: GOOGLE_OAUTH_RESOURCE_URL, Value: !Ref GoogleOAuthResourceUrl }
+            - { Name: GOOGLE_OAUTH_TRANSACTION_TTL_SECONDS, Value: '600' }
+          Secrets:
+            - { Name: DATABASE_PASSWORD, ValueFrom: !Ref DatabasePasswordSecretArn }
+            - { Name: REDIS_URL, ValueFrom: !Ref RedisUrlSecretArn }
+            - { Name: JWT_SECRET, ValueFrom: !Ref JwtSecretArn }
+            - { Name: GOOGLE_OAUTH_CLIENT_SECRET, ValueFrom: !Ref GoogleClientSecretArn }
+            - { Name: GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY, ValueFrom: !Ref GoogleTokenEncryptionKeySecretArn }
+          HealthCheck:
+            Command: [CMD-SHELL, "node -e \"fetch('http://127.0.0.1:4000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+            Interval: 15
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 30
+          StopTimeout: 120
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApiLogGroupName
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+
+  WorkerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: lead360-worker
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref WorkerExecutionRoleArn
+      TaskRoleArn: !Ref WorkerTaskRoleArn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: worker
+          Image: !Sub '${ApiRepositoryUri}:${ImageTag}'
+          Essential: true
+          Command: [node, dist/worker.js]
+          Environment:
+            - { Name: NODE_ENV, Value: production }
+            - { Name: DATABASE_TYPE, Value: postgres }
+            - { Name: DATABASE_SSL, Value: 'true' }
+            - { Name: DATABASE_HOST, Value: !Ref DatabaseHost }
+            - { Name: DATABASE_PORT, Value: '5432' }
+            - { Name: DATABASE_NAME, Value: !Ref DatabaseName }
+            - { Name: DATABASE_USER, Value: !Ref DatabaseUser }
+            - { Name: LEAD_FOLLOWUP_DELAY_SECONDS, Value: '86400' }
+            - { Name: LEAD_JOB_WORKER_CONCURRENCY, Value: '5' }
+          Secrets:
+            - { Name: DATABASE_PASSWORD, ValueFrom: !Ref DatabasePasswordSecretArn }
+            - { Name: REDIS_URL, ValueFrom: !Ref RedisUrlSecretArn }
+          HealthCheck:
+            Command: [CMD, node, dist/scripts/worker-healthcheck.js]
+            Interval: 15
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 30
+          StopTimeout: 120
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WorkerLogGroupName
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: worker
+
+  DbInitTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: lead360-db-init
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !Ref DbInitExecutionRoleArn
+      TaskRoleArn: !Ref DbInitTaskRoleArn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: db-init
+          Image: !Sub '${ApiRepositoryUri}:${ImageTag}'
+          Essential: true
+          Command: [npm, run, 'db:init']
+          WorkingDirectory: /app/backend
+          Environment:
+            - { Name: NODE_ENV, Value: production }
+            - { Name: DATABASE_TYPE, Value: postgres }
+            - { Name: DATABASE_SSL, Value: 'true' }
+            - { Name: DATABASE_HOST, Value: !Ref DatabaseHost }
+            - { Name: DATABASE_PORT, Value: '5432' }
+            - { Name: DATABASE_NAME, Value: !Ref DatabaseName }
+            - { Name: DATABASE_USER, Value: !Ref DatabaseUser }
+          Secrets:
+            - { Name: DATABASE_PASSWORD, ValueFrom: !Ref DatabasePasswordSecretArn }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref DbInitLogGroupName
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: db-init
+
+Outputs:
+  ApiTaskDefinitionArn:
+    Value: !Ref ApiTaskDefinition
+  WorkerTaskDefinitionArn:
+    Value: !Ref WorkerTaskDefinition
+  DbInitTaskDefinitionArn:
+    Value: !Ref DbInitTaskDefinition

@@ -1,0 +1,97 @@
+name: Deploy frontend to S3 and CloudFront (manual, confirmed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_frontend_deploy:
+        description: Confirm reviewed deployment to the configured staging bucket and distribution
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_frontend_deploy == true
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_FRONTEND_DEPLOY_ROLE_ARN }}
+      FRONTEND_S3_BUCKET: ${{ vars.FRONTEND_S3_BUCKET }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+      VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+      FRONTEND_BUILD_ENV: production
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require successful CI for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&branch=main&per_page=100" > "${RUNNER_TEMP}/ci-runs.json"
+          node - "${RUNNER_TEMP}/ci-runs.json" <<'NODE'
+          const fs = require('node:fs');
+          const runs = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).workflow_runs ?? [];
+          const passed = runs.some((run) => run.head_sha === process.env.GITHUB_SHA
+            && run.event === 'push'
+            && run.status === 'completed'
+            && run.conclusion === 'success');
+          if (!passed) {
+            console.error('No successful main-branch CI run found for this commit; frontend deployment is blocked.');
+            process.exit(1);
+          }
+          console.log('Verified successful main-branch CI for this commit.');
+          NODE
+
+      - name: Validate required deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AWS_REGION:?Set the AWS_REGION repository variable}"
+          : "${AWS_ROLE_ARN:?Set the AWS_FRONTEND_DEPLOY_ROLE_ARN repository variable}"
+          : "${FRONTEND_S3_BUCKET:?Set the FRONTEND_S3_BUCKET repository variable}"
+          : "${CLOUDFRONT_DISTRIBUTION_ID:?Set the CLOUDFRONT_DISTRIBUTION_ID repository variable}"
+          node frontend/scripts/validate-api-url.mjs
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build static frontend
+        run: |
+          npm ci
+          npm run build
+        working-directory: frontend
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync static assets and invalidate CloudFront
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws s3 sync frontend/dist "s3://${FRONTEND_S3_BUCKET}" \
+            --exclude index.html \
+            --cache-control 'public,max-age=31536000,immutable'
+          aws s3 cp frontend/dist/index.html "s3://${FRONTEND_S3_BUCKET}/index.html" \
+            --content-type 'text/html' \
+            --cache-control 'no-cache,no-store,must-revalidate'
+          aws cloudfront create-invalidation \
+            --distribution-id "${CLOUDFRONT_DISTRIBUTION_ID}" \
+            --paths '/' '/index.html'

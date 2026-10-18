@@ -1,0 +1,17 @@
+Node.js + TypeScript project foundation	✅ Completed
+2	Backend architecture + PostgreSQL + Docker basics	✅ Completed
+3	Complete CRUD + Advanced SQL + Pagination	✅ Completed
+4	Authentication + JWT + Authorization/RBAC	✅ Completed
+5	Redis + Caching	✅ Completed
+6	Background jobs + Queues (BullMQ + Redis)	⬅️ NEXT
+7	WebSockets / Real-time features	⏳ Pending
+8	Dockerize the complete application	⏳ Pending
+9	Docker networking + volumes + production configuration	⏳ Pending
+10	CI/CD with GitHub Actions	⏳ Pending
+11	AWS deployment	⏳ Pending
+12	AWS services relevant to your resume	⏳ Pending
+13	Logging + Monitoring	⏳ Pending
+14	Security + Rate limiting + production hardening	⏳ Pending
+15	Testing	⏳ Pending
+16	System design / HLD around LeadFlow360	⏳ Pending
+17	Backend + DevOps interview revision	⏳ Pending

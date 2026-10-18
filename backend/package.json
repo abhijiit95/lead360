@@ -10,6 +10,7 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
+    "db:init": "node dist/database-init.js",
     "jobs:inspect": "tsx src/scripts/inspect-lead-jobs.ts",
     "socket:client": "tsx src/scripts/socket-test-client.ts",
     "test": "node --import tsx --test test/*.test.ts",

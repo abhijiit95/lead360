@@ -10,10 +10,15 @@ COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.jso
 COPY src ./src
 
 # This URL is reached by the user's browser, not from inside the frontend container.
-# Override it for deployments where the API has a different browser-accessible URL.
-ARG VITE_API_BASE_URL=http://localhost:4000
+# Supply the browser-accessible API URL for every image build. Local Compose
+# supplies its localhost default; production builds must pass an HTTPS URL.
+ARG VITE_API_BASE_URL
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+ARG FRONTEND_BUILD_ENV=production
+ENV FRONTEND_BUILD_ENV=${FRONTEND_BUILD_ENV}
 
+COPY scripts/validate-api-url.mjs ./scripts/validate-api-url.mjs
+RUN node scripts/validate-api-url.mjs
 RUN npm run build
 
 # Serve static files as an unprivileged Nginx process.

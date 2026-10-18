@@ -120,7 +120,7 @@ services:
       mongodb:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/health/ready').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -162,6 +162,13 @@ services:
       mongodb:
         condition: service_healthy
 
+    healthcheck:
+      test: ["CMD", "node", "dist/scripts/worker-healthcheck.js"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   frontend:
     image: leadflow360-frontend:local
     build:
@@ -169,6 +176,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:4000}
+        FRONTEND_BUILD_ENV: development
     restart: unless-stopped
     ports:
       - "5173:8080"

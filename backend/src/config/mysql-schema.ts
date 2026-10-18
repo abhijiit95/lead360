@@ -1,4 +1,4 @@
-import { mysqlPool } from "./mysql.js";
+import { getMySqlPool } from "./mysql.js";
 
 const createLeadsTableQuery = `
   CREATE TABLE IF NOT EXISTS leads (
@@ -20,7 +20,7 @@ const createLeadsTableQuery = `
 
 export async function initializeMySqlSchema(): Promise<void> {
   try {
-    await mysqlPool.query(createLeadsTableQuery);
+    await getMySqlPool().query(createLeadsTableQuery);
     console.log("[MySQL] Leads schema initialized");
   } catch (error) {
     console.error("[MySQL] Leads schema initialization failed:", error);

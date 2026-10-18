@@ -22,6 +22,11 @@ export async function connectMongoDB(): Promise<void> {
   }
 }
 
+export async function pingMongoDB(): Promise<void> {
+  if (connection.readyState !== 1 || !connection.db) throw new Error("MongoDB is not connected");
+  await connection.db.admin().ping();
+}
+
 export async function disconnectMongoDB(): Promise<void> {
   if (connection.readyState !== 0) {
     await mongoose.disconnect();

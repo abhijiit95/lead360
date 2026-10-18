@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { readDatabaseTlsOptions } from "./database-tls.js";
 
 function requiredEnvironmentVariable(name: string): string {
   const value = process.env[name];
@@ -19,6 +20,7 @@ export const pool = new Pool({
   database: requiredEnvironmentVariable("DATABASE_NAME"),
   user: requiredEnvironmentVariable("DATABASE_USER"),
   password: requiredEnvironmentVariable("DATABASE_PASSWORD"),
+  ssl: readDatabaseTlsOptions(),
 });
 
 pool.on("error", (error) => {

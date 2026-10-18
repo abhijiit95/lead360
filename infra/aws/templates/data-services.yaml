@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private staging RDS PostgreSQL and TLS-enabled Valkey-compatible Redis service.
+
+Parameters:
+  PrivateSubnetIds:
+    Type: CommaDelimitedList
+    Description: At least two private subnet IDs in distinct Availability Zones.
+  DatabaseSecurityGroupId:
+    Type: String
+  RedisSecurityGroupId:
+    Type: String
+  DatabaseName:
+    Type: String
+  DatabaseUsername:
+    Type: String
+  DatabasePasswordSecretArn:
+    Type: String
+    Description: Secrets Manager SecretString containing the PostgreSQL password.
+  PostgresEngineVersion:
+    Type: String
+    Description: Select an RDS PostgreSQL engine version supported in the target region.
+  PostgresParameterGroupFamily:
+    Type: String
+    Description: Must match the major family selected for PostgresEngineVersion (for example, the matching postgres major family).
+  DatabaseInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+  DatabaseAllocatedStorageGiB:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 1000
+  DatabaseMaxAllocatedStorageGiB:
+    Type: Number
+    Default: 100
+    MinValue: 20
+    MaxValue: 65536
+  DatabaseMultiAz:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Enable Multi-AZ for higher availability after staging cost/recovery review.
+  DatabaseDeletionProtection:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  RedisEngineVersion:
+    Type: String
+    Description: Select a supported Valkey engine version for the target region.
+  RedisNodeType:
+    Type: String
+    Default: cache.t4g.micro
+  RedisAuthTokenSecretArn:
+    Type: String
+    Description: SecretString containing a valid ElastiCache auth token; never pass the token itself as a template parameter.
+
+Resources:
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private subnets for LeadFlow360 PostgreSQL.
+      SubnetIds: !Ref PrivateSubnetIds
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-postgres-subnets' }]
+
+  DatabaseParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: Require TLS for PostgreSQL client connections.
+      Family: !Ref PostgresParameterGroupFamily
+      Parameters:
+        rds.force_ssl: '1'
+
+  PostgresDatabase:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: postgres
+      EngineVersion: !Ref PostgresEngineVersion
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      DBInstanceIdentifier: !Sub '${AWS::StackName}-postgres'
+      DBName: !Ref DatabaseName
+      MasterUsername: !Ref DatabaseUsername
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabasePasswordSecretArn}:SecretString}}'
+      Port: 5432
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      DBParameterGroupName: !Ref DatabaseParameterGroup
+      VPCSecurityGroups: [!Ref DatabaseSecurityGroupId]
+      PubliclyAccessible: false
+      StorageType: gp3
+      AllocatedStorage: !Ref DatabaseAllocatedStorageGiB
+      MaxAllocatedStorage: !Ref DatabaseMaxAllocatedStorageGiB
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      CopyTagsToSnapshot: true
+      AutoMinorVersionUpgrade: true
+      MultiAZ: !If [EnableDatabaseMultiAz, true, false]
+      DeletionProtection: !If [EnableDatabaseDeletionProtection, true, false]
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-postgres' }]
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: Private subnets for LeadFlow360 Redis-compatible service.
+      SubnetIds: !Ref PrivateSubnetIds
+      CacheSubnetGroupName: !Sub '${AWS::StackName}-cache-subnets'
+
+  RedisReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      ReplicationGroupId: !Sub '${AWS::StackName}-queue-cache'
+      ReplicationGroupDescription: LeadFlow360 staging cache and BullMQ queue backend.
+      Engine: valkey
+      EngineVersion: !Ref RedisEngineVersion
+      CacheNodeType: !Ref RedisNodeType
+      NumCacheClusters: 1
+      Port: 6379
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds: [!Ref RedisSecurityGroupId]
+      AtRestEncryptionEnabled: true
+      TransitEncryptionEnabled: true
+      AuthToken: !Sub '{{resolve:secretsmanager:${RedisAuthTokenSecretArn}:SecretString}}'
+      AutomaticFailoverEnabled: false
+      MultiAZEnabled: false
+      AutoMinorVersionUpgrade: true
+      SnapshotRetentionLimit: 1
+      Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-queue-cache' }]
+
+Conditions:
+  EnableDatabaseMultiAz: !Equals [!Ref DatabaseMultiAz, 'true']
+  EnableDatabaseDeletionProtection: !Equals [!Ref DatabaseDeletionProtection, 'true']
+
+Outputs:
+  DatabaseEndpointAddress: { Value: !GetAtt PostgresDatabase.Endpoint.Address }
+  DatabaseEndpointPort: { Value: !GetAtt PostgresDatabase.Endpoint.Port }
+  DatabaseInstanceIdentifier: { Value: !Ref PostgresDatabase }
+  RedisPrimaryEndpointAddress: { Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address }
+  RedisPrimaryEndpointPort: { Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Port }
+  RedisReplicationGroupId: { Value: !Ref RedisReplicationGroup }

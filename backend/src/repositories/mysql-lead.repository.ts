@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mysqlPool } from "../config/mysql.js";
+import { getMySqlPool } from "../config/mysql.js";
 import type {
   CreateLeadInput,
   Lead,
@@ -15,7 +15,7 @@ const updateColumns: ReadonlyArray<keyof LeadUpdateInput> = ["name", "email", "p
 export class MySqlLeadRepository implements LeadRepository {
   async create(input: CreateLeadInput): Promise<Lead> {
     const id = randomUUID();
-    await mysqlPool.execute(
+    await getMySqlPool().execute(
       `INSERT INTO leads (id, name, email, phone, source, status)
        VALUES (?, ?, ?, ?, ?, COALESCE(?, 'new'))`,
       [id, input.name, input.email, input.phone, input.source, input.status ?? null],
@@ -41,12 +41,12 @@ export class MySqlLeadRepository implements LeadRepository {
     const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
     const offset = (filters.page - 1) * filters.limit;
     const [leadsResult, countResult] = await Promise.all([
-      mysqlPool.execute(
+      getMySqlPool().execute(
         `SELECT ${selectedLeadColumns} FROM leads ${whereClause}
          ORDER BY created_at DESC LIMIT ? OFFSET ?`,
         [...filterValues, filters.limit, offset],
       ),
-      mysqlPool.execute(
+      getMySqlPool().execute(
         `SELECT COUNT(*) AS total FROM leads ${whereClause}`,
         filterValues,
       ),
@@ -67,7 +67,7 @@ export class MySqlLeadRepository implements LeadRepository {
   }
 
   async findById(id: string): Promise<Lead | null> {
-    const [rows] = await mysqlPool.execute(
+    const [rows] = await getMySqlPool().execute(
       `SELECT ${selectedLeadColumns} FROM leads WHERE id = ?`,
       [id],
     );
@@ -81,7 +81,7 @@ export class MySqlLeadRepository implements LeadRepository {
     if (entries.length === 0) return this.findById(id);
 
     const assignments = entries.map(([column]) => `${column} = ?`).join(", ");
-    await mysqlPool.execute(
+    await getMySqlPool().execute(
       `UPDATE leads SET ${assignments} WHERE id = ?`,
       [...entries.map(([, value]) => value), id],
     );
@@ -89,7 +89,7 @@ export class MySqlLeadRepository implements LeadRepository {
   }
 
   async delete(id: string): Promise<boolean> {
-    const [result] = await mysqlPool.execute("DELETE FROM leads WHERE id = ?", [id]);
+    const [result] = await getMySqlPool().execute("DELETE FROM leads WHERE id = ?", [id]);
     return (result as { affectedRows: number }).affectedRows === 1;
   }
 }

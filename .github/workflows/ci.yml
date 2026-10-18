@@ -75,6 +75,7 @@ jobs:
           docker build
           --file frontend/Dockerfile
           --build-arg VITE_API_BASE_URL=http://localhost:4000
+          --build-arg FRONTEND_BUILD_ENV=development
           --tag lead360-frontend:ci
           frontend
 
@@ -122,6 +123,40 @@ jobs:
           push: true
           build-args: |
             VITE_API_BASE_URL=http://localhost:4000
+            FRONTEND_BUILD_ENV=development
           tags: |
             ghcr.io/${{ steps.image-owner.outputs.owner }}/lead360-frontend:${{ github.sha }}
             ghcr.io/${{ steps.image-owner.outputs.owner }}/lead360-frontend:latest
+
+  publish-backend-to-ecr:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure AWS credentials through GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::531767454878:role/GitHubActionsECRPushRole
+          aws-region: us-east-1
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+
+      - name: Build and push backend image
+        shell: bash
+        env:
+          ECR_IMAGE: 531767454878.dkr.ecr.us-east-1.amazonaws.com/lead360-api
+        run: |
+          set -euo pipefail
+          docker build \
+            --file backend/Dockerfile \
+            --tag "${ECR_IMAGE}:${GITHUB_SHA}" \
+            backend
+          docker push "${ECR_IMAGE}:${GITHUB_SHA}"

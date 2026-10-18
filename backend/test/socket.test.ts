@@ -204,5 +204,5 @@ test("disconnects clients and removes them from the leads room", async () => {
   client.disconnect();
   await disconnected;
   assert.equal(socketServer.sockets.sockets.has(clientId), false);
-  assert.equal(socketServer.sockets.adapter.rooms.get(leadsReadRoom)?.has(clientId), undefined);
+  assert.equal(socketServer.sockets.adapter.rooms.get(leadsReadRoom)?.has(clientId) ?? false, false);
 });

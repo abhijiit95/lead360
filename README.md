@@ -21,7 +21,42 @@ npm install
 npm run dev
 ```
 
-On startup, the API checks the database connection and creates the `leads` table if needed. The API listens on port `4000` by default. `GET http://localhost:4000/api/health` reports API health.
+During local development, the API checks the database connection and creates its required tables if needed. The API listens on port `4000` by default. `GET http://localhost:4000/api/health` is a liveness check; `/api/health/ready` checks required database and Redis dependencies.
+
+## Full-stack Docker Compose
+
+The root Compose file runs the frontend, backend API, BullMQ worker, PostgreSQL, Redis, MySQL, and MongoDB together. Ensure the root `.env` already exists and is configured; Compose uses its database and application settings without copying `.env` into the images.
+
+Start the stack from the repository root:
+
+```sh
+docker compose up --build -d
+docker compose ps
+```
+
+The frontend is available at `http://localhost:5173` and the API health endpoint at `http://localhost:4000/api/health`. `VITE_API_BASE_URL` is compiled into the browser bundle and defaults to `http://localhost:4000`; set it to the API URL reachable by users' browsers for a non-local deployment. It must not be set to the Compose-only hostname `api` or `backend`.
+
+Compose waits for infrastructure health checks before starting the API and worker, and for the API health check before starting the frontend. PostgreSQL is the backend's core database in every mode; the selected lead adapter is initialized only when configured. MySQL application settings are required by the backend only when `DATABASE_TYPE=mysql`. Compose still starts its local MySQL service and therefore uses the example's `MYSQL_*` settings to configure that service. Google OAuth secrets are passed only to the API. MongoDB root credentials stay with the MongoDB service. If selecting MongoDB with `DATABASE_TYPE=mongodb`, configure `MONGODB_DOCKER_URI` in the local `.env` with the internal hostname `mongodb` and the appropriate URL-encoded credentials. The existing `MONGODB_URI` is for processes running outside Compose. A separate `MYSQL_ROOT_PASSWORD` is recommended; if omitted, Compose uses `MYSQL_PASSWORD` as the local MySQL root password.
+
+Stop the stack without deleting its named database volumes:
+
+```sh
+docker compose down
+```
+
+The existing `postgres_data`, `redis_data`, `mysql_data`, and `mongodb_data` volumes remain in place after this command.
+
+### Production runtime preparation
+
+The backend image includes a one-time, non-destructive schema initializer. Build the backend image, then run a one-off task using the same database configuration/secrets as the API with command `node dist/database-init.js` before starting or updating API and worker tasks. It creates missing PostgreSQL tables and constraints, and initializes the MySQL leads table when `DATABASE_TYPE=mysql`; it does not drop data. MongoDB creates its lead collection on first write, so the initializer verifies MongoDB connectivity when that adapter is selected. The API continues its existing schema initialization only in development. Production API and worker processes perform connection checks but no schema DDL. Local Compose keeps development mode; its API initializes schemas before the worker becomes ready.
+
+For a production frontend image, provide `VITE_API_BASE_URL` as the HTTPS URL users' browsers will use to reach the API and build with `FRONTEND_BUILD_ENV=production`. The build rejects HTTP, localhost, and loopback URLs in production. Local Compose explicitly uses development build mode and its localhost URL. GHCR publishing reads the non-secret GitHub repository variable `VITE_API_BASE_URL`; configure it before publishing. No production domain is set in this repository.
+
+The worker waits for BullMQ's Redis connection and updates a local heartbeat only while that Redis connection is ready. Compose health checks `node dist/scripts/worker-healthcheck.js`; configure the same command as the ECS worker container health check. This verifies process heartbeat and Redis connectivity, not successful delivery of external notifications. Notifications remain development mocks.
+
+Socket.IO currently uses its in-memory adapter. Multiple API tasks can serve connections, but broadcasts from one task do not reach clients connected to another task. Before scaling API tasks, add and configure a supported shared Socket.IO adapter and ensure the load balancer supports the selected transport (including session stickiness for long-polling). No adapter or extra infrastructure is configured here.
+
+Production runtime configuration must use `NODE_ENV=production`, a browser-facing HTTPS `VITE_API_BASE_URL` at frontend build time, HTTPS `FRONTEND_ORIGIN`, and exact HTTPS `GOOGLE_OAUTH_REDIRECT_URI` and `GOOGLE_OIDC_REDIRECT_URI` callback URLs registered with Google. Supply `DATABASE_TYPE`, PostgreSQL connection settings, and `REDIS_URL`. MySQL settings are needed only when `DATABASE_TYPE=mysql`; MongoDB settings are needed only when `DATABASE_TYPE=mongodb`. Supply JWT and Google OAuth secrets only through a production secret manager. Do not bake runtime credentials into images. The frontend URL is public configuration and must contain no credentials.
 
 ## Lead API
 
