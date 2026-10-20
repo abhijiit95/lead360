@@ -18,3 +18,5 @@ Resources:
 Outputs:
   ApiRepositoryUri:
     Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ApiRepository}'
+  ApiRepositoryArn:
+    Value: !GetAtt ApiRepository.Arn

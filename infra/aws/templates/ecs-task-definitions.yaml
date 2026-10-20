@@ -49,8 +49,10 @@ Parameters:
     Default: 1h
   GoogleClientSecretArn:
     Type: String
+    Default: ''
   GoogleTokenEncryptionKeySecretArn:
     Type: String
+    Default: ''
   GoogleClientId:
     Type: String
     Default: ''
@@ -69,6 +71,22 @@ Parameters:
   GoogleOAuthResourceUrl:
     Type: String
     Default: ''
+
+Rules:
+  GoogleIntegrationRequiresCompleteConfiguration:
+    RuleCondition: !Not [!Equals [!Ref GoogleClientId, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref GoogleClientSecretArn, '']]
+        AssertDescription: Set GoogleClientSecretArn when GoogleClientId is configured.
+      - Assert: !Not [!Equals [!Ref GoogleTokenEncryptionKeySecretArn, '']]
+        AssertDescription: Set GoogleTokenEncryptionKeySecretArn when GoogleClientId is configured.
+      - Assert: !Not [!Equals [!Ref GoogleOAuthRedirectUri, '']]
+        AssertDescription: Set GoogleOAuthRedirectUri when GoogleClientId is configured.
+      - Assert: !Not [!Equals [!Ref GoogleOidcRedirectUri, '']]
+        AssertDescription: Set GoogleOidcRedirectUri when GoogleClientId is configured.
+
+Conditions:
+  GoogleIntegrationEnabled: !Not [!Equals [!Ref GoogleClientId, '']]
 
 Resources:
   ApiLogGroup:
@@ -128,8 +146,14 @@ Resources:
             - { Name: DATABASE_PASSWORD, ValueFrom: !Ref DatabasePasswordSecretArn }
             - { Name: REDIS_URL, ValueFrom: !Ref RedisUrlSecretArn }
             - { Name: JWT_SECRET, ValueFrom: !Ref JwtSecretArn }
-            - { Name: GOOGLE_OAUTH_CLIENT_SECRET, ValueFrom: !Ref GoogleClientSecretArn }
-            - { Name: GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY, ValueFrom: !Ref GoogleTokenEncryptionKeySecretArn }
+            - !If
+              - GoogleIntegrationEnabled
+              - { Name: GOOGLE_OAUTH_CLIENT_SECRET, ValueFrom: !Ref GoogleClientSecretArn }
+              - !Ref AWS::NoValue
+            - !If
+              - GoogleIntegrationEnabled
+              - { Name: GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY, ValueFrom: !Ref GoogleTokenEncryptionKeySecretArn }
+              - !Ref AWS::NoValue
           HealthCheck:
             Command: [CMD-SHELL, "node -e \"fetch('http://127.0.0.1:4000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
             Interval: 15

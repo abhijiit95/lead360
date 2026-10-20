@@ -135,6 +135,7 @@ Resources:
       SecurityGroupIngress:
         - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: !Ref AllowedClientIpv4Cidr }
         - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: !Ref AllowedClientIpv4Cidr }
+      SecurityGroupEgress: []
       Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-alb-sg' }]
   ApiSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -143,18 +144,21 @@ Resources:
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - { IpProtocol: tcp, FromPort: 4000, ToPort: 4000, SourceSecurityGroupId: !Ref AlbSecurityGroup }
+      SecurityGroupEgress: []
       Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-api-sg' }]
   WorkerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Worker tasks have no inbound rules and reach only private services by routing/security group policy.
       VpcId: !Ref Vpc
+      SecurityGroupEgress: []
       Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-worker-sg' }]
   DbInitSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: One-off database initializer with no inbound rules.
       VpcId: !Ref Vpc
+      SecurityGroupEgress: []
       Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-db-init-sg' }]
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -165,6 +169,7 @@ Resources:
         - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref ApiSecurityGroup }
         - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref WorkerSecurityGroup }
         - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref DbInitSecurityGroup }
+      SecurityGroupEgress: []
       Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-postgres-sg' }]
   RedisSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -174,7 +179,81 @@ Resources:
       SecurityGroupIngress:
         - { IpProtocol: tcp, FromPort: 6379, ToPort: 6379, SourceSecurityGroupId: !Ref ApiSecurityGroup }
         - { IpProtocol: tcp, FromPort: 6379, ToPort: 6379, SourceSecurityGroupId: !Ref WorkerSecurityGroup }
+      SecurityGroupEgress: []
       Tags: [{ Key: Name, Value: !Sub '${AWS::StackName}-redis-sg' }]
+
+  AlbToApiEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 4000
+      ToPort: 4000
+      DestinationSecurityGroupId: !Ref ApiSecurityGroup
+  ApiToPostgresEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+  ApiToRedisEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      DestinationSecurityGroupId: !Ref RedisSecurityGroup
+  ApiToHttpsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+  WorkerToPostgresEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref WorkerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+  WorkerToRedisEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref WorkerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 6379
+      ToPort: 6379
+      DestinationSecurityGroupId: !Ref RedisSecurityGroup
+  WorkerToHttpsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref WorkerSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+  DbInitToPostgresEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref DbInitSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+  DbInitToHttpsEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref DbInitSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
 
 Outputs:
   VpcId: { Value: !Ref Vpc }

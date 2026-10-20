@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Separate ECS execution/task roles and narrowly scoped GitHub OIDC publishing/deployment roles for LeadFlow360.
+Description: Separate ECS execution/task roles and a narrowly scoped GitHub OIDC frontend deployment role for LeadFlow360.
 
 Parameters:
   ApiSecretArns:
@@ -26,9 +26,6 @@ Parameters:
   GitHubOidcProviderArn:
     Type: String
     Description: Existing token.actions.githubusercontent.com OIDC provider ARN.
-  GitHubEcrOidcSubject:
-    Type: String
-    Description: Exact GitHub OIDC sub claim for the publishing repository and branch; match the subject format actually issued by GitHub.
   GitHubFrontendOidcSubject:
     Type: String
     Description: Exact GitHub OIDC sub claim for the repository staging environment; restrict that environment to the intended branch in GitHub.
@@ -147,33 +144,6 @@ Resources:
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
 
-  GitHubEcrPublishRole:
-    Type: AWS::IAM::Role
-    Properties:
-      MaxSessionDuration: 3600
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Ref GitHubOidcProviderArn
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Ref GitHubEcrOidcSubject
-      Policies:
-        - PolicyName: PublishLead360ApiImage
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: ecr:GetAuthorizationToken
-                Resource: '*'
-              - Effect: Allow
-                Action: ['ecr:BatchCheckLayerAvailability', 'ecr:CompleteLayerUpload', 'ecr:DescribeImages', 'ecr:InitiateLayerUpload', 'ecr:PutImage', 'ecr:UploadLayerPart']
-                Resource: !Ref ApiEcrRepositoryArn
-
   GitHubFrontendDeployRole:
     Type: AWS::IAM::Role
     Properties:
@@ -211,5 +181,4 @@ Outputs:
   ApiTaskRoleArn: { Value: !GetAtt ApiTaskRole.Arn }
   WorkerTaskRoleArn: { Value: !GetAtt WorkerTaskRole.Arn }
   DbInitTaskRoleArn: { Value: !GetAtt DbInitTaskRole.Arn }
-  GitHubEcrPublishRoleArn: { Value: !GetAtt GitHubEcrPublishRole.Arn }
   GitHubFrontendDeployRoleArn: { Value: !GetAtt GitHubFrontendDeployRole.Arn }

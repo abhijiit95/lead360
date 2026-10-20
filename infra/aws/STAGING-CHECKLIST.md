@@ -11,8 +11,9 @@ record secret ARNs here only in a private deployment runbook, not in Git.
 - [ ] GitHub repository owner: `<GitHub owner>`
 - [ ] GitHub repository name: `<GitHub repository>`
 - [ ] Verified default/publishing branch: `<branch>`
-- [ ] Exact ECR publishing OIDC `sub` claim for the repository and branch:
-      `<GitHubEcrOidcSubject; verify whether immutable IDs are included>`
+- [ ] Exact `sub` claim in the existing `GitHubActionsECRPushRole` trust
+      policy for this repository and `main` branch; verify its format rather
+      than assuming the template's old role subject parameter.
 - [ ] Exact static frontend OIDC `sub` claim for the staging environment:
       `<GitHubFrontendOidcSubject; verify whether immutable IDs are included>`
 - [ ] GitHub `staging` environment has required reviewers and allows only
@@ -20,7 +21,8 @@ record secret ARNs here only in a private deployment runbook, not in Git.
 - [ ] Both publishing/deployment workflows require a successful `push` CI
       run for the exact commit before requesting AWS credentials.
 - [ ] GitHub OIDC provider ARN: `<OIDC provider ARN>`
-- [ ] GitHub ECR publishing role ARN variable: `<role ARN>`
+- [ ] Existing GitHub ECR publishing role ARN: `arn:aws:iam::531767454878:role/GitHubActionsECRPushRole`; this is an existing AWS role, not created by `iam-roles.yaml`.
+- [ ] GitHub `AWS_ECR_PUBLISH_ROLE_ARN` repository variable matches the existing role ARN above; automatic CI currently uses that ARN directly.
 - [ ] GitHub frontend deploy role ARN variable: `<role ARN>`
 - [ ] GitHub Actions repository variables: `AWS_REGION=<region>`,
       `AWS_ECR_PUBLISH_ROLE_ARN=<API image role ARN>`,
@@ -76,6 +78,10 @@ record secret ARNs here only in a private deployment runbook, not in Git.
       NAT egress.
 - [ ] Private tasks have controlled outbound HTTPS access to Google OAuth/OIDC
       endpoints. No inbound access is opened for the worker.
+- [ ] Security-group outbound rules allow ALB-to-API TCP 4000; API/worker-to-
+      PostgreSQL TCP 5432 and Valkey TCP 6379; and task HTTPS egress TCP 443
+      through NAT for ECR, Secrets Manager, CloudWatch Logs, and Google. RDS
+      and Valkey have no client-initiated egress rules.
 
 ## Container registry and ECS
 
@@ -99,6 +105,10 @@ record secret ARNs here only in a private deployment runbook, not in Git.
 - [ ] API desired count: `1`; worker desired count: `1` for initial staging.
 - [ ] Confirm the ALB target group uses container port 4000 and
       `/api/health/ready` for health checks.
+- [ ] Confirm the existing ECR role trusts only this GitHub repository's
+      `main` workflow subject and can push only to `lead360-api`; verify the
+      live role policy in AWS. The CloudFormation IAM template does not create
+      or modify that existing role.
 - [ ] Confirm the ECS API execution role, worker execution role, and DB-init
       execution role can read only their required secrets and write to their
       own CloudWatch log groups. Keep task roles separate and without AWS
@@ -128,8 +138,10 @@ record secret ARNs here only in a private deployment runbook, not in Git.
       ElastiCache's supported token character/length constraints. The
       application `REDIS_URL` secret includes the selected endpoint and token.
 - [ ] JWT secret ARN: `<Secrets Manager ARN>`
-- [ ] Google OAuth client secret ARN: `<Secrets Manager ARN>`
-- [ ] Google OAuth token-encryption key ARN: `<Secrets Manager ARN>`
+- [ ] If Google integration is enabled, Google OAuth client secret ARN:
+      `<Secrets Manager ARN>`
+- [ ] If Google integration is enabled, Google OAuth token-encryption key ARN:
+      `<Secrets Manager ARN>`
 - [ ] OAuth token-encryption key SecretString is base64 encoded and decodes
       to exactly 32 bytes; do not place its value in this checklist.
 - [ ] Confirm secret JSON/key formats match the ECS `ValueFrom` references.
@@ -191,15 +203,15 @@ complete descriptions and secret formats are in `infra/aws/README.md`.
       `ApiSecretArns`, `WorkerSecretArns`, `DbInitSecretArns`,
       `ApiLogGroupArn`, `WorkerLogGroupArn`, `DbInitLogGroupArn`,
       `FrontendBucketArn`, `CloudFrontDistributionArn`,
-      `GitHubOidcProviderArn`, `GitHubEcrOidcSubject`,
-      `GitHubFrontendOidcSubject`.
+      `GitHubOidcProviderArn`, `GitHubFrontendOidcSubject`. The existing
+      `GitHubActionsECRPushRole` is external and is not a template parameter.
 - [ ] `ecs-task-definitions.yaml`: `ImageTag`, `ApiRepositoryUri`, all six
       API/worker/DB-init execution and task role ARNs, `DatabaseHost`,
       `DatabaseName`, `DatabaseUser`, `RedisUrlSecretArn`,
-      `DatabasePasswordSecretArn`, `JwtSecretArn`,
-      `GoogleClientSecretArn`, `GoogleTokenEncryptionKeySecretArn`,
-      `FrontendOrigin`; optional Google client ID, callback URLs, scopes,
-      resource URL, JWT expiry, and log group names.
+      `DatabasePasswordSecretArn`, `JwtSecretArn`, `FrontendOrigin`; optional
+      Google client ID, callbacks, scopes, resource URL, Google secret ARNs,
+      JWT expiry, and log group names. When client ID is set, CloudFormation
+      rules require both Google secret ARNs and both callback URLs.
 - [ ] `ecs-services-alb.yaml`: `VpcId`, `PublicSubnetIds`, `PrivateSubnetIds`,
       `AlbSecurityGroupId`, `ApiSecurityGroupId`, `WorkerSecurityGroupId`,
       `ApiCertificateArn`, `ApiTaskDefinitionArn`, `WorkerTaskDefinitionArn`;
