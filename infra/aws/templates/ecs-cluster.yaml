@@ -1,0 +1,25 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS cluster for LeadFlow360 Fargate tasks.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: lead360-staging
+    Description: Name for the LeadFlow360 ECS cluster.
+
+Resources:
+  LeadFlowCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ClusterName
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+Outputs:
+  EcsClusterArn:
+    Description: Pass this ARN as ClusterArn to ecs-services-alb.yaml.
+    Value: !Ref LeadFlowCluster
+  EcsClusterName:
+    Description: Name of the LeadFlow360 ECS cluster.
+    Value: !Ref ClusterName

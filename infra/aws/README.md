@@ -31,7 +31,8 @@ The API currently uses the default in-memory Socket.IO adapter. One API task avo
 - `templates/ecs-task-definitions.yaml` defines API, worker, and one-off initializer Fargate tasks. The initial 512 CPU / 1024 MiB settings are valid Fargate sizing examples, not load-tested recommendations. The API command comes from the backend image (`node dist/server.js`); worker uses `node dist/worker.js`; DB initialization runs `npm run db:init` in `/app/backend`. API checks `/api/health/ready`; worker checks its Redis-dependent heartbeat. API and worker have a 120-second stop timeout for graceful shutdown.
 - `templates/networking.yaml` creates the VPC, two-AZ subnet layout, staging NAT, and least-privilege ingress and egress security groups. CIDRs must be selected to avoid overlap with connected networks.
 - `templates/data-services.yaml` creates private, encrypted RDS PostgreSQL and TLS/auth-enabled ElastiCache Valkey. It expects a Secrets Manager PostgreSQL password and Valkey auth token. The initial Redis configuration is single-node/no-failover and the database defaults to single-AZ; adjust both before production availability commitments.
-- `templates/ecs-services-alb.yaml` creates the ECS cluster, public ALB with HTTP-to-HTTPS redirect, HTTPS listener, readiness target group, and private API/worker Fargate services. It expects task-definition ARNs and network outputs from the prior stacks. Configure DNS to alias the API domain to the ALB output.
+- `templates/ecs-cluster.yaml` creates the ECS cluster with the existing Container Insights setting. Its `EcsClusterArn` output is the required `ClusterArn` input for `ecs-services-alb.yaml`.
+- `templates/ecs-services-alb.yaml` creates the public ALB with HTTP-to-HTTPS redirect, HTTPS listener, readiness target group, and private API/worker Fargate services. It consumes the cluster ARN from `ecs-cluster.yaml`, task-definition ARNs, and network outputs. Configure DNS to alias the API domain to the ALB output.
 - `templates/frontend-cloudfront.yaml` defines a private, encrypted S3 bucket, CloudFront Origin Access Control, HTTPS-only distribution, and SPA route fallback. It does not upload the Vite build. CloudFront ACM certificates must be in `us-east-1`; choose a real domain and certificate before deploying.
 
 Run `cfn-lint infra/aws/templates/*.yaml` before provisioning. CloudFormation-aware validation checks template/resource schemas locally; it does not validate live-account IAM, quotas, service availability, or replace review of a CloudFormation change set. No AWS validation or deployment has been performed in this review. Before provisioning, review stack parameters, IAM, CIDR overlap, service quotas/region support, certificate/domain ownership, and resource replacement/deletion behavior. The DB-init task definition is configured in the task-definition template and uses the DB-init security group when run as a one-off Fargate task.
@@ -76,19 +77,35 @@ The backend creates the MySQL connection pool lazily, only when the MySQL lead a
 
 ## One-time database initialization and rollout order
 
-The backend image includes `dist/database-init.js`. Build/test and publish an immutable API image, then register the task definitions. Run the database-init task **once per schema rollout** in private subnets using the database security group and the required DB secrets:
+Keep service creation behind the one-time schema initialization. The reviewed deployment order is:
+
+1. Validate CloudFormation and all staging inputs locally. This validation does not create resources or incur AWS charges.
+2. Provision prerequisite stacks only after separately authorizing the AWS work and confirming its cost: networking, data services, ECR, frontend hosting, and IAM roles.
+3. Deploy `ecs-task-definitions.yaml` to register the API, worker, and DB-init task definitions against the selected immutable image SHA. Task definition registration does not launch tasks.
+4. Deploy `ecs-cluster.yaml`; capture its `EcsClusterArn` output.
+5. Run the registered DB-init task once, passing that cluster ARN and private subnet/security-group configuration. Confirm the task stopped with exit code 0 and review its sanitized logs.
+6. Only after DB-init succeeds, deploy `ecs-services-alb.yaml`, passing `ClusterArn` from `EcsClusterArn`, the task-definition ARNs, and networking/certificate inputs. This is the step that creates the ALB and starts the API and worker services.
+7. Verify ALB/API readiness and worker heartbeat/health before proceeding with DNS, OAuth callbacks, and frontend release.
+
+The backend image includes `dist/database-init.js`. To run the DB-init task **once per schema rollout**, set these shell variables from the named CloudFormation stack outputs:
 
 ```sh
+ECS_CLUSTER_ARN='<ecs-cluster stack output: EcsClusterArn>'
+DB_INIT_TASK_DEFINITION_ARN='<ecs-task-definitions stack output: DbInitTaskDefinitionArn>'
+PRIVATE_SUBNET_IDS='<networking stack output: PrivateSubnetIds, comma-separated>'
+DB_INIT_SECURITY_GROUP_ID='<networking stack output: DbInitSecurityGroupId>'
+
 aws ecs run-task \
-  --cluster <ECS_CLUSTER_ARN_OR_NAME> \
+  --cluster "$ECS_CLUSTER_ARN" \
   --launch-type FARGATE \
-  --task-definition <DB_INIT_TASK_DEFINITION_ARN> \
-  --network-configuration 'awsvpcConfiguration={subnets=[<PRIVATE_SUBNET_IDS>],securityGroups=[<DB_CLIENT_SECURITY_GROUP_ID>],assignPublicIp=DISABLED}'
+  --count 1 \
+  --task-definition "$DB_INIT_TASK_DEFINITION_ARN" \
+  --network-configuration "awsvpcConfiguration={subnets=[$PRIVATE_SUBNET_IDS],securityGroups=[$DB_INIT_SECURITY_GROUP_ID],assignPublicIp=DISABLED}"
 ```
 
-Wait for that task to exit successfully and inspect its sanitized CloudWatch log stream before deploying/updating API and worker services. The current command uses idempotent `CREATE ... IF NOT EXISTS`/guarded constraint DDL for PostgreSQL and MySQL, so rerunning the current bootstrap is intended to be non-destructive. It is not a versioned migration framework and does not migrate changed columns. MongoDB collection creation remains lazy on first write; its initializer path checks connectivity only.
+The networking stack also outputs `DatabaseSecurityGroupId`; pass it to `data-services.yaml`, which attaches it to RDS. Its PostgreSQL ingress allows `DbInitSecurityGroupId`, and the DB-init security group allows outbound PostgreSQL traffic. The data-services stack then outputs `DatabaseEndpointAddress`, which becomes task-definition parameter `DatabaseHost`. `DatabaseName` and `DatabaseUsername` are supplied to `data-services.yaml`; pass the same database name and username to `ecs-task-definitions.yaml` as `DatabaseName` and `DatabaseUser`. The database password Secret ARN is an externally supplied stack parameter, not a generated output. The task definition sets PostgreSQL connection variables and injects `DATABASE_PASSWORD` from `DatabasePasswordSecretArn`; do not put the password in this command or shell arguments. The initializer task role/execution role and secret access must also be configured through the task-definition/IAM stack inputs.
 
-Suggested release order: tests → immutable ECR images → one-off DB initialization → API service rollout and readiness → worker rollout and heartbeat health → frontend build with the API HTTPS URL → S3 sync and CloudFront invalidation. Do not run the initializer concurrently with API/worker rollout.
+Wait for that task to exit successfully and inspect its sanitized CloudWatch log stream before deploying/updating API and worker services. The current command uses idempotent `CREATE ... IF NOT EXISTS`/guarded constraint DDL for PostgreSQL and MySQL, so rerunning the current bootstrap is intended to be non-destructive. It is not a versioned migration framework and does not migrate changed columns. MongoDB collection creation remains lazy on first write; its initializer path checks connectivity only. If the task fails, stop the rollout and inspect the failure before retrying. Do not run the initializer concurrently with API/worker rollout.
 
 ## Persistence, backups, and operations
 
@@ -116,7 +133,7 @@ The frontend **Continue with Google** button navigates the browser to `GET /api/
 
 For local Google Console setup, register `http://localhost:4000/api/oauth/google/callback` for delegated Google API access and `http://localhost:4000/api/oidc/google/callback` for Google sign-in. Production requires the finalized HTTPS API origin plus those same paths; keep both Google redirect URI settings byte-for-byte aligned with the registered values.
 
-Before provisioning, validate CloudFormation with `cfn-lint` or equivalent. Deploy in dependency order: networking → data services and ECR → CloudFront frontend bucket/distribution → IAM roles (they need the ECR, log group, frontend bucket, and distribution ARNs) → task definitions → ALB/ECS services. Then configure DNS and Google callbacks, and only then enable the reviewed static frontend workflow. The log group ARNs can be supplied from the exact log group names and account/region before task definitions create the groups. For GitHub trust, supply exact ECR branch and staging-environment OIDC subjects; the `staging` GitHub Environment must have required reviewers and a `main`-only deployment branch rule. Run the DB-init task once before API/worker service rollout. These are plans only; no AWS calls have been made.
+Before provisioning, validate CloudFormation with `cfn-lint` or equivalent. After separately authorizing and funding provisioning, create prerequisite stacks in dependency order: networking → data services and ECR → CloudFront frontend bucket/distribution → IAM roles (they need the ECR, log group, frontend bucket, and distribution ARNs). Then register task definitions, create the cluster, run and verify DB initialization, and only then create/update the ALB/API/worker services stack. Pass the cluster stack's `EcsClusterArn` output as the services stack's required `ClusterArn` parameter. Configure DNS and Google callbacks after the ALB/domain are ready, and enable the reviewed static frontend workflow only after those prerequisites. The log group ARNs can be supplied from the exact log group names and account/region before task definitions create the groups. For GitHub trust, supply exact ECR branch and staging-environment OIDC subjects; the `staging` GitHub Environment must have required reviewers and a `main`-only deployment branch rule. These are plans only; no AWS calls have been made.
 
 ## Required CloudFormation parameters
 
@@ -130,7 +147,8 @@ Parameters without defaults are required. Use prior stack outputs where availabl
 | `frontend-cloudfront.yaml` | `FrontendDomainName`, `AcmCertificateArn` | `PriceClass`. The CloudFront ACM certificate must be in `us-east-1`. |
 | `iam-roles.yaml` | `ApiEcrRepositoryArn`, `ApiSecretArns`, `WorkerSecretArns`, `DbInitSecretArns`, `ApiLogGroupArn`, `WorkerLogGroupArn`, `DbInitLogGroupArn`, `FrontendBucketArn`, `CloudFrontDistributionArn`, `GitHubOidcProviderArn`, `GitHubFrontendOidcSubject` | None. The existing ECR publishing role is external to this template. The frontend trust subject must exactly match GitHub's claim; never use wildcard subjects. |
 | `ecs-task-definitions.yaml` | `ImageTag` (40-character commit SHA), `ApiRepositoryUri`, all six API/worker/DB-init execution/task role ARNs, `DatabaseHost`, `DatabaseName`, `DatabaseUser`, `RedisUrlSecretArn`, `DatabasePasswordSecretArn`, `JwtSecretArn`, `FrontendOrigin` | Log group names, `JwtExpiresIn`, `GoogleClientId`, OAuth/OIDC callback URLs, scopes, resource URL, `GoogleClientSecretArn`, `GoogleTokenEncryptionKeySecretArn`. Leave Google client ID and callback values empty when Google features are disabled; when client ID is set, CloudFormation rules require both secret ARNs and both callbacks. |
-| `ecs-services-alb.yaml` | `VpcId`, `PublicSubnetIds`, `PrivateSubnetIds`, `AlbSecurityGroupId`, `ApiSecurityGroupId`, `WorkerSecurityGroupId`, `ApiCertificateArn`, `ApiTaskDefinitionArn`, `WorkerTaskDefinitionArn` | `ClusterName`, `ApiDesiredCount`, `WorkerDesiredCount`. |
+| `ecs-cluster.yaml` | None | `ClusterName` (`lead360-staging`). Outputs `EcsClusterArn` and `EcsClusterName`. |
+| `ecs-services-alb.yaml` | `ClusterArn` (use `EcsClusterArn` from `ecs-cluster.yaml`), `VpcId`, `PublicSubnetIds`, `PrivateSubnetIds`, `AlbSecurityGroupId`, `ApiSecurityGroupId`, `WorkerSecurityGroupId`, `ApiCertificateArn`, `ApiTaskDefinitionArn`, `WorkerTaskDefinitionArn` | `ApiDesiredCount`, `WorkerDesiredCount`. |
 
 The ECR template outputs the repository URI and ARN; networking and data templates output subnet/security-group and database/cache endpoint values; CloudFront outputs bucket/distribution values; IAM outputs ECS role ARNs and the frontend deploy role ARN; task definitions output task-definition ARNs. The existing ECR publish role is external and is not an IAM-template output. Use the same log group names in the IAM and task-definition stacks. The ECS service-linked role must exist, or the provisioning identity must be able to create it.
 

@@ -134,6 +134,7 @@ services:
     restart: unless-stopped
     command: ["node", "dist/worker.js"]
     environment:
+      NODE_ENV: development
       DATABASE_TYPE: ${DATABASE_TYPE:-postgres}
       DATABASE_HOST: postgres
       DATABASE_PORT: "5432"

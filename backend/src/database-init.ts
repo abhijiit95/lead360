@@ -4,6 +4,7 @@ import { closeMySqlPool, testMySqlConnection } from "./config/mysql.js";
 import { initializeMySqlSchema } from "./config/mysql-schema.js";
 import { connectMongoDB, disconnectMongoDB } from "./config/mongodb.js";
 import { leadDatabaseType } from "./repositories/lead-repository.factory.js";
+import { formatDatabaseInitializationError } from "./database-init-error.js";
 
 async function initialize(): Promise<void> {
   try {
@@ -21,7 +22,7 @@ async function initialize(): Promise<void> {
   }
 }
 
-void initialize().catch(() => {
-  console.error("Database initialization failed");
+void initialize().catch((error: unknown) => {
+  console.error("Database initialization failed:\n" + formatDatabaseInitializationError(error));
   process.exitCode = 1;
 });
