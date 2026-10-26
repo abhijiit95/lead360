@@ -11,7 +11,11 @@ export function validateFrontendApiUrl(value, buildEnvironment = "production") {
   if (buildEnvironment !== "production" && buildEnvironment !== "development") {
     throw new Error("FRONTEND_BUILD_ENV must be production or development");
   }
-  if (!value) throw new Error("VITE_API_BASE_URL is required");
+  if (value === undefined) throw new Error("VITE_API_BASE_URL must be explicitly set");
+  if (value === "") {
+    if (buildEnvironment === "production") return undefined;
+    throw new Error("VITE_API_BASE_URL must be set for development builds");
+  }
 
   let url;
   try {

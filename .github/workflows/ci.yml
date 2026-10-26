@@ -61,7 +61,7 @@ jobs:
         run: npm run build
         working-directory: frontend
         env:
-          VITE_API_BASE_URL: http://localhost:4000
+          VITE_API_BASE_URL: ""
 
       - name: Test frontend
         run: npm test
@@ -74,8 +74,8 @@ jobs:
         run: >-
           docker build
           --file frontend/Dockerfile
-          --build-arg VITE_API_BASE_URL=http://localhost:4000
-          --build-arg FRONTEND_BUILD_ENV=development
+          --build-arg VITE_API_BASE_URL=
+          --build-arg FRONTEND_BUILD_ENV=production
           --tag lead360-frontend:ci
           frontend
 
@@ -122,8 +122,8 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           build-args: |
-            VITE_API_BASE_URL=http://localhost:4000
-            FRONTEND_BUILD_ENV=development
+            VITE_API_BASE_URL=
+            FRONTEND_BUILD_ENV=production
           tags: |
             ghcr.io/${{ steps.image-owner.outputs.owner }}/lead360-frontend:${{ github.sha }}
             ghcr.io/${{ steps.image-owner.outputs.owner }}/lead360-frontend:latest

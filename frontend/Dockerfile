@@ -9,9 +9,9 @@ RUN npm ci
 COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
 COPY src ./src
 
-# This URL is reached by the user's browser, not from inside the frontend container.
-# Supply the browser-accessible API URL for every image build. Local Compose
-# supplies its localhost default; production builds must pass an HTTPS URL.
+# The URL is embedded in browser JavaScript. An empty production value uses
+# same-origin /api requests through this image's Nginx proxy. Static S3/CloudFront
+# builds must instead provide an explicit HTTPS API URL.
 ARG VITE_API_BASE_URL
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 ARG FRONTEND_BUILD_ENV=production

@@ -5,7 +5,11 @@ export interface SessionUser {
   role: "admin" | "agent";
 }
 
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:4000").replace(/\/$/, "");
+export function resolveApiBaseUrl(configuredBaseUrl: string | undefined, isDevelopment: boolean): string {
+  return (configuredBaseUrl ?? (isDevelopment ? "http://localhost:4000" : "")).replace(/\/$/, "");
+}
+
+const apiBaseUrl = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL, import.meta.env.DEV);
 
 export function startGoogleLogin(): void {
   window.location.assign(`${apiBaseUrl}/api/oidc/google/login`);

@@ -61,6 +61,7 @@ jobs:
           : "${AWS_ROLE_ARN:?Set the AWS_FRONTEND_DEPLOY_ROLE_ARN repository variable}"
           : "${FRONTEND_S3_BUCKET:?Set the FRONTEND_S3_BUCKET repository variable}"
           : "${CLOUDFRONT_DISTRIBUTION_ID:?Set the CLOUDFRONT_DISTRIBUTION_ID repository variable}"
+          : "${VITE_API_BASE_URL:?Set a public HTTPS API URL for the static S3/CloudFront frontend}"
           node frontend/scripts/validate-api-url.mjs
 
       - name: Set up Node.js

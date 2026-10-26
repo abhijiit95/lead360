@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { validateFrontendApiUrl } from "./validate-api-url.mjs";
 
 describe("frontend API URL build validation", () => {
-  it("requires an explicit URL", () => {
-    expect(() => validateFrontendApiUrl(undefined, "production")).toThrow(/required/);
+  it("allows an explicitly empty production URL for same-origin API calls", () => {
+    expect(validateFrontendApiUrl("", "production")).toBeUndefined();
+    expect(() => validateFrontendApiUrl(undefined, "production")).toThrow(/explicitly set/);
+    expect(() => validateFrontendApiUrl("", "development")).toThrow(/development builds/);
   });
 
   it("accepts HTTPS and rejects local or HTTP URLs for production", () => {
