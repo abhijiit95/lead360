@@ -81,6 +81,16 @@ def fail(message):
     raise SystemExit(1)
 
 
+def has_network_dns_name(endpoint, expected_name):
+    if not isinstance(endpoint, dict):
+        return False
+    for field in ("Aliases", "DNSNames"):
+        names = endpoint.get(field)
+        if isinstance(names, list) and expected_name in names:
+            return True
+    return False
+
+
 def load(path, expected_name, expected_port, required_names=()):
     try:
         info = json.load(open(path, encoding="utf-8"))[0]
@@ -99,11 +109,12 @@ def load(path, expected_name, expected_port, required_names=()):
         fail(f"{expected_name} restart policy differs from the verified configuration; no containers were changed.")
     if host.get("NetworkMode") != "lead360-network":
         fail(f"{expected_name} network mode differs from the verified configuration; no containers were changed.")
-    networks = info.get("NetworkSettings", {}).get("Networks") or {}
-    if set(networks) != {"lead360-network"}:
+    network_settings = info.get("NetworkSettings") or {}
+    networks = network_settings.get("Networks") or {}
+    if not isinstance(networks, dict) or set(networks) != {"lead360-network"}:
         fail(f"{expected_name} network attachments differ from the verified configuration; no containers were changed.")
-    endpoint = networks["lead360-network"]
-    if expected_name not in (endpoint.get("Aliases") or []):
+    endpoint = networks.get("lead360-network")
+    if not has_network_dns_name(endpoint, expected_name):
         fail(f"{expected_name} lacks its required Docker DNS alias; no containers were changed.")
     ipam = endpoint.get("IPAMConfig") or {}
     if any(ipam.get(field) for field in ("IPv4Address", "IPv6Address", "LinkLocalIPs")):
