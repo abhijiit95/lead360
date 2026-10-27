@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Dedicated GitHub OIDC role for SSM shell commands on one LeadFlow360 EC2 instance; shell commands run with SSM Agent privileges.
+
+Parameters:
+  GitHubOidcProviderArn:
+    Type: String
+    Description: ARN of the existing token.actions.githubusercontent.com OIDC provider.
+  GitHubDeployOidcSubject:
+    Type: String
+    Default: repo:abhijiit95/lead360:ref:refs/heads/main
+    AllowedPattern: '^repo:abhijiit95/lead360:ref:refs/heads/main$'
+    Description: Exact OIDC sub claim for this repository's main branch.
+  Ec2InstanceId:
+    Type: String
+    Default: i-08b344c2c5a9f02b8
+    AllowedPattern: '^i-[0-9a-f]+$'
+    Description: Only this EC2 instance can receive deployment Run Commands.
+
+Resources:
+  GitHubEc2DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Ref GitHubDeployOidcSubject
+      Policies:
+        - PolicyName: SendLeadFlow360DeployCommandToOneInstance
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: RunOnlyTheShellDocumentOnTheTargetInstance
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript'
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${Ec2InstanceId}'
+              - Sid: ReadCommandExecutionResult
+                Effect: Allow
+                Action: ssm:GetCommandInvocation
+                Resource: '*'
+
+Outputs:
+  GitHubEc2DeployRoleArn:
+    Value: !GetAtt GitHubEc2DeployRole.Arn
