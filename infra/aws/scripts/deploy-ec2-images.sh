@@ -34,6 +34,10 @@ if ! docker run --help 2>&1 | grep -q -- '--no-healthcheck'; then
   echo "Docker CLI lacks --no-healthcheck; no containers were changed."
   exit 1
 fi
+if ! docker run --help 2>&1 | grep -q -- '--health-start-interval'; then
+  echo "Docker CLI lacks --health-start-interval; health-check settings cannot be preserved safely, so no containers were changed."
+  exit 1
+fi
 
 work_dir="$(mktemp -d /run/lead360-deploy.XXXXXXXX)"
 chmod 700 "$work_dir"
@@ -48,6 +52,8 @@ readonly API_INSPECT="${work_dir}/api-inspect.json"
 readonly FRONTEND_INSPECT="${work_dir}/frontend-inspect.json"
 readonly API_ENV_FILE="${work_dir}/api.env"
 readonly FRONTEND_ENV_FILE="${work_dir}/frontend.env"
+readonly API_HEALTHCHECK_ARGS="${work_dir}/api-healthcheck-args.json"
+readonly FRONTEND_HEALTHCHECK_ARGS="${work_dir}/frontend-healthcheck-args.json"
 
 # Save inspected config only in a private, short-lived EC2 directory.
 docker inspect "$API_NAME" > "$API_INSPECT"
@@ -61,13 +67,14 @@ if [[ "$POSTGRES_BEFORE" != *:true || "$REDIS_BEFORE" != *:true ]]; then
   exit 1
 fi
 
-python3 - "$API_INSPECT" "$FRONTEND_INSPECT" "$API_ENV_FILE" "$FRONTEND_ENV_FILE" <<'PY'
+python3 - "$API_INSPECT" "$FRONTEND_INSPECT" "$API_ENV_FILE" "$FRONTEND_ENV_FILE" \
+  "$API_HEALTHCHECK_ARGS" "$FRONTEND_HEALTHCHECK_ARGS" <<'PY'
 import json
 import os
 import re
 import sys
 
-api_path, frontend_path, api_env_path, frontend_env_path = sys.argv[1:]
+api_path, frontend_path, api_env_path, frontend_env_path, api_health_path, frontend_health_path = sys.argv[1:]
 required_api_names = {
     "NODE_ENV", "PORT", "DATABASE_TYPE", "DATABASE_HOST", "DATABASE_PORT",
     "DATABASE_NAME", "DATABASE_USER", "DATABASE_PASSWORD", "DATABASE_SSL",
@@ -109,7 +116,57 @@ def network_mac_for_replacement(endpoint, expected_name):
     return mac_address
 
 
-def load(path, expected_name, expected_port, required_names=()):
+def healthcheck_docker_args(healthcheck, expected_name):
+    if healthcheck is None:
+        return ["--no-healthcheck"]
+    if not isinstance(healthcheck, dict):
+        raise ValueError(f"{expected_name} has malformed Docker health-check settings")
+
+    supported_fields = {"Test", "Interval", "Timeout", "Retries", "StartPeriod", "StartInterval"}
+    if set(healthcheck) - supported_fields:
+        raise ValueError(f"{expected_name} has unsupported Docker health-check fields")
+
+    test = healthcheck.get("Test")
+    if not isinstance(test, list) or not test or not all(isinstance(part, str) for part in test):
+        raise ValueError(f"{expected_name} has a missing or malformed Docker health-check command")
+
+    durations = ("Interval", "Timeout", "StartPeriod", "StartInterval")
+    duration_values = {}
+    for field in durations:
+        value = healthcheck.get(field, 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 9_223_372_036_854_775_807:
+            raise ValueError(f"{expected_name} has an invalid Docker health-check {field}")
+        duration_values[field] = value
+
+    retries = healthcheck.get("Retries", 0)
+    if isinstance(retries, bool) or not isinstance(retries, int) or retries < 0 or retries > 2_147_483_647:
+        raise ValueError(f"{expected_name} has an invalid Docker health-check Retries")
+
+    if test == ["NONE"]:
+        if any(duration_values.values()) or retries:
+            raise ValueError(f"{expected_name} has timing values on a disabled Docker health check")
+        return ["--no-healthcheck"]
+    if test[0] == "CMD":
+        raise ValueError(
+            f"{expected_name} uses an exec-form Docker health check that this docker run interface cannot preserve safely"
+        )
+    if len(test) != 2 or test[0] != "CMD-SHELL" or not test[1].strip():
+        raise ValueError(f"{expected_name} has an unsupported or malformed Docker health-check command")
+
+    args = ["--health-cmd", test[1]]
+    for field, option in (
+        ("Interval", "--health-interval"),
+        ("Timeout", "--health-timeout"),
+        ("Retries", "--health-retries"),
+        ("StartPeriod", "--health-start-period"),
+        ("StartInterval", "--health-start-interval"),
+    ):
+        value = retries if field == "Retries" else duration_values[field]
+        args.extend([option, f"{value}ns"] if field != "Retries" else [option, str(value)])
+    return args
+
+
+def load(path, expected_name, expected_port, env_path, health_path, required_names=()):
     try:
         info = json.load(open(path, encoding="utf-8"))[0]
     except Exception:
@@ -139,8 +196,10 @@ def load(path, expected_name, expected_port, required_names=()):
     ipam = endpoint.get("IPAMConfig") or {}
     if any(ipam.get(field) for field in ("IPv4Address", "IPv6Address", "LinkLocalIPs")):
         fail(f"{expected_name} has a static network address that needs review; no containers were changed.")
-    if config.get("Healthcheck"):
-        fail(f"{expected_name} has a Docker health check not present in the verified configuration; no containers were changed.")
+    try:
+        health_args = healthcheck_docker_args(config.get("Healthcheck"), expected_name)
+    except ValueError as error:
+        fail(f"{error}; no containers were changed.")
     if config.get("Tty") or config.get("OpenStdin") or config.get("AttachStdin"):
         fail(f"{expected_name} has interactive settings that need review; no containers were changed.")
 
@@ -179,15 +238,17 @@ def load(path, expected_name, expected_port, required_names=()):
     if not set(required_names).issubset(names):
         fail("lead360-api is missing a verified runtime variable name; no containers were changed.")
 
-    env_path = api_env_path if expected_name == "lead360-api" else frontend_env_path
     fd = os.open(env_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
         for item in env:
             stream.write(item + "\n")
+    fd = os.open(health_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(health_args, stream)
 
 
-load(api_path, "lead360-api", 4000, required_api_names)
-load(frontend_path, "lead360-frontend", 8080)
+load(api_path, "lead360-api", 4000, api_env_path, api_health_path, required_api_names)
+load(frontend_path, "lead360-frontend", 8080, frontend_env_path, frontend_health_path)
 print("Verified app container settings; environment values remain in private temporary files.")
 PY
 
@@ -207,23 +268,28 @@ if ! docker pull --quiet "$FRONTEND_IMAGE" >/dev/null 2>&1; then
 fi
 
 start_replacement() {
-  local name="$1" image="$2" inspect_file="$3" env_file="$4" port="$5" mount_spec="${6:-}"
-  python3 - "$name" "$image" "$inspect_file" "$env_file" "$port" "$mount_spec" <<'PY'
+  local name="$1" image="$2" inspect_file="$3" env_file="$4" health_args_file="$5" port="$6" mount_spec="${7:-}"
+  python3 - "$name" "$image" "$inspect_file" "$env_file" "$health_args_file" "$port" "$mount_spec" <<'PY'
 import json
 import subprocess
 import sys
 
-name, image, inspect_path, env_path, port, mount_spec = sys.argv[1:]
+name, image, inspect_path, env_path, health_args_path, port, mount_spec = sys.argv[1:]
 with open(inspect_path, encoding="utf-8") as inspect_file:
     info = json.load(inspect_file)[0]
+with open(health_args_path, encoding="utf-8") as health_args_file:
+    health_args = json.load(health_args_file)
 config = info["Config"]
 endpoint = info["NetworkSettings"]["Networks"]["lead360-network"]
 args = [
     "docker", "run", "--detach", "--name", name,
     "--restart", "unless-stopped", "--network", "lead360-network",
     "--publish", f"127.0.0.1:{port}:{port}/tcp",
-    "--env-file", env_path, "--no-healthcheck",
+    "--env-file", env_path,
 ]
+if not isinstance(health_args, list) or not all(isinstance(arg, str) for arg in health_args):
+    raise SystemExit(f"Invalid preflight health-check arguments for {name}; no container was started.")
+args.extend(health_args)
 for alias in endpoint.get("Aliases") or []:
     if alias != info.get("Id") and alias != info.get("Id", "")[:12]:
         args.extend(["--network-alias", alias])
@@ -251,9 +317,11 @@ PY
 }
 
 wait_for_http() {
-  local name="$1" url="$2" attempt
+  local name="$1" url="$2" attempt running health_status
   for attempt in $(seq 1 60); do
-    if [[ "$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null || true)" == "true" ]] \
+    running="$(docker inspect --format '{{.State.Running}}' "$name" 2>/dev/null || true)"
+    health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$name" 2>/dev/null || true)"
+    if [[ "$running" == "true" && ( "$health_status" == "healthy" || "$health_status" == "none" ) ]] \
       && curl --fail --silent --show-error --max-time 5 --output /dev/null "$url" 2>/dev/null; then
       echo "${name} is running and its HTTP health endpoint responded successfully."
       return 0
@@ -265,7 +333,7 @@ wait_for_http() {
 }
 
 replace_container() {
-  local name="$1" image="$2" inspect_file="$3" env_file="$4" port="$5" mount_spec="${6:-}"
+  local name="$1" image="$2" inspect_file="$3" env_file="$4" health_args_file="$5" port="$6" mount_spec="${7:-}"
   local current_image backup_name
   current_image="$(docker inspect --format '{{.Config.Image}}' "$name")"
   if [[ "$current_image" == "$image" ]]; then
@@ -277,15 +345,15 @@ replace_container() {
   docker stop --time 30 "$name" >/dev/null
   docker rename "$name" "$backup_name"
   docker network disconnect --force "$NETWORK" "$backup_name" >/dev/null
-  start_replacement "$name" "$image" "$inspect_file" "$env_file" "$port" "$mount_spec"
+  start_replacement "$name" "$image" "$inspect_file" "$env_file" "$health_args_file" "$port" "$mount_spec"
   echo "Previous ${name} container retained, stopped, and disconnected as ${backup_name}."
 }
 
-replace_container "$API_NAME" "$API_IMAGE" "$API_INSPECT" "$API_ENV_FILE" 4000 \
+replace_container "$API_NAME" "$API_IMAGE" "$API_INSPECT" "$API_ENV_FILE" "$API_HEALTHCHECK_ARGS" 4000 \
   "type=bind,source=/opt/lead360/tls/ca.crt,target=/run/secrets/postgres-ca.crt,readonly"
 wait_for_http "$API_NAME" "http://127.0.0.1:4000/api/health/ready"
 
-replace_container "$FRONTEND_NAME" "$FRONTEND_IMAGE" "$FRONTEND_INSPECT" "$FRONTEND_ENV_FILE" 8080
+replace_container "$FRONTEND_NAME" "$FRONTEND_IMAGE" "$FRONTEND_INSPECT" "$FRONTEND_ENV_FILE" "$FRONTEND_HEALTHCHECK_ARGS" 8080
 wait_for_http "$FRONTEND_NAME" "http://127.0.0.1:8080/"
 wait_for_http "$FRONTEND_NAME" "http://127.0.0.1:8080/api/health/ready"
 

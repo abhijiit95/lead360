@@ -1,4 +1,4 @@
-AWSTemplateFormatVersion: '2010-09-09'
+ApiTaskDefinitionAWSTemplateFormatVersion: '2010-09-09'
 Description: ECS Fargate task definition templates for LeadFlow360 API, worker, and one-off database initialization.
 
 Parameters:
