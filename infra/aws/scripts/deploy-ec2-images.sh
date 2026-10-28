@@ -91,6 +91,24 @@ def has_network_dns_name(endpoint, expected_name):
     return False
 
 
+def network_mac_for_replacement(endpoint, expected_name):
+    if not isinstance(endpoint, dict):
+        raise ValueError(f"{expected_name} has missing network endpoint settings")
+    if not has_network_dns_name(endpoint, expected_name):
+        raise ValueError(f"{expected_name} lacks its required Docker DNS alias")
+    if endpoint.get("Links"):
+        raise ValueError(f"{expected_name} has custom network links that need review")
+    if endpoint.get("DriverOpts"):
+        raise ValueError(f"{expected_name} has custom network driver options that need review")
+
+    mac_address = endpoint.get("MacAddress")
+    if mac_address in (None, ""):
+        return None
+    if not isinstance(mac_address, str) or not re.fullmatch(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", mac_address):
+        raise ValueError(f"{expected_name} has an invalid endpoint MAC address that cannot be preserved")
+    return mac_address
+
+
 def load(path, expected_name, expected_port, required_names=()):
     try:
         info = json.load(open(path, encoding="utf-8"))[0]
@@ -114,13 +132,13 @@ def load(path, expected_name, expected_port, required_names=()):
     if not isinstance(networks, dict) or set(networks) != {"lead360-network"}:
         fail(f"{expected_name} network attachments differ from the verified configuration; no containers were changed.")
     endpoint = networks.get("lead360-network")
-    if not has_network_dns_name(endpoint, expected_name):
-        fail(f"{expected_name} lacks its required Docker DNS alias; no containers were changed.")
+    try:
+        network_mac_for_replacement(endpoint, expected_name)
+    except ValueError as error:
+        fail(f"{error}; no containers were changed.")
     ipam = endpoint.get("IPAMConfig") or {}
     if any(ipam.get(field) for field in ("IPv4Address", "IPv6Address", "LinkLocalIPs")):
         fail(f"{expected_name} has a static network address that needs review; no containers were changed.")
-    if endpoint.get("Links") or endpoint.get("DriverOpts") or endpoint.get("MacAddress"):
-        fail(f"{expected_name} has custom network settings that need review; no containers were changed.")
     if config.get("Healthcheck"):
         fail(f"{expected_name} has a Docker health check not present in the verified configuration; no containers were changed.")
     if config.get("Tty") or config.get("OpenStdin") or config.get("AttachStdin"):
@@ -196,7 +214,8 @@ import subprocess
 import sys
 
 name, image, inspect_path, env_path, port, mount_spec = sys.argv[1:]
-info = json.load(open(inspect_path, encoding="utf-8"))[0]
+with open(inspect_path, encoding="utf-8") as inspect_file:
+    info = json.load(inspect_file)[0]
 config = info["Config"]
 endpoint = info["NetworkSettings"]["Networks"]["lead360-network"]
 args = [
@@ -208,6 +227,8 @@ args = [
 for alias in endpoint.get("Aliases") or []:
     if alias != info.get("Id") and alias != info.get("Id", "")[:12]:
         args.extend(["--network-alias", alias])
+if endpoint.get("MacAddress"):
+    args.extend(["--mac-address", endpoint["MacAddress"]])
 if config.get("User"):
     args.extend(["--user", config["User"]])
 if config.get("WorkingDir"):
